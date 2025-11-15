@@ -59,8 +59,6 @@ export default function HLSVideoPlayer({
 
   // Loading state management
   const [isLoading, setIsLoading] = useState(true);
-  const [isBuffering, setIsBuffering] = useState(false);
-  const [bufferingProgress, setBufferingProgress] = useState(0);
 
   // Quality selection state
   const [availableLevels, setAvailableLevels] = useState<any[]>([]);
@@ -297,41 +295,12 @@ export default function HLSVideoPlayer({
 
       // Buffer monitoring event handlers
       hls.on(Hls.Events.BUFFER_APPENDING, (event, data) => {
-        setIsBuffering(true);
         console.log('[HLS] Buffer appending:', data);
       });
 
       hls.on(Hls.Events.BUFFER_APPENDED, (event, data) => {
-        const video = videoRef.current;
-        if (video) {
-          const buffered = video.buffered;
-          if (buffered.length > 0) {
-            const bufferedEnd = buffered.end(buffered.length - 1);
-            const currentTime = video.currentTime;
-            const bufferedAmount = bufferedEnd - currentTime;
-            const progress = Math.min((bufferedAmount / 30) * 100, 100); // 30s buffer target
-            setBufferingProgress(progress);
-
-            if (bufferedAmount > 5) {
-              // Buffer is healthy (>5s ahead)
-              setIsBuffering(false);
-            }
-          }
-        }
         console.log('[HLS] Buffer appended:', data);
       });
-
-      // Monitor video element buffering state
-      const handleWaiting = () => {
-        setIsBuffering(true);
-      };
-
-      const handleCanPlay = () => {
-        setIsBuffering(false);
-      };
-
-      video.addEventListener('waiting', handleWaiting);
-      video.addEventListener('canplay', handleCanPlay);
 
       // Seeking detection event handlers
       const handleSeeking = () => {
@@ -358,8 +327,6 @@ export default function HLSVideoPlayer({
       video.addEventListener('seeked', handleSeeked);
 
       return () => {
-        video.removeEventListener('waiting', handleWaiting);
-        video.removeEventListener('canplay', handleCanPlay);
         video.removeEventListener('seeking', handleSeeking);
         video.removeEventListener('seeked', handleSeeked);
         hls.destroy();
@@ -401,13 +368,6 @@ export default function HLSVideoPlayer({
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
             <div className="text-white">Loading video...</div>
-          </div>
-        )}
-
-        {/* Buffering indicator */}
-        {isBuffering && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/30 z-10">
-            <div className="text-white">Buffering... {Math.round(bufferingProgress)}%</div>
           </div>
         )}
 
