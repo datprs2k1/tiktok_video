@@ -81,7 +81,7 @@ export default function HLSVideoPlayer({
   }, [hlsUrl]);
 
   return (
-    <div className="relative w-full h-full">
+    <div className="absolute inset-0">
       {/* Glassmorphism Container - Mobile optimized */}
       <div className="
         relative w-full h-full
