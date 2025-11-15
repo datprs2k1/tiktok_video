@@ -77,6 +77,8 @@ export default function HLSVideoPlayer({
 
   // Debouncing ref for hls.startLoad() calls
   const lastLoadTimeRef = useRef<number>(0);
+  // Timeout tracking to prevent multiple setTimeout callbacks from accumulating
+  const pendingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -128,19 +130,40 @@ export default function HLSVideoPlayer({
       // Throttled wrapper for hls.startLoad() to prevent redundant network requests
       // Defined at useEffect level so it's accessible to all handlers
       const throttledStartLoad = () => {
+        // CRITICAL: Check if HLS is already loading to prevent duplicate requests
+        // HLS.js has a 'loading' property that TypeScript types may not include
+        if (hls && 'loading' in hls && (hls as any).loading) {
+          return; // Already loading, skip to prevent duplicate segment requests
+        }
+
         const now = Date.now();
         const timeSinceLastLoad = now - lastLoadTimeRef.current;
         const minInterval = 500; // Minimum 500ms between calls
 
         if (timeSinceLastLoad >= minInterval) {
           lastLoadTimeRef.current = now;
+          // Cancel any pending timeout before making immediate call
+          if (pendingTimeoutRef.current) {
+            clearTimeout(pendingTimeoutRef.current);
+            pendingTimeoutRef.current = null;
+          }
           if (hls) {
             hls.startLoad();
           }
         } else {
           // Schedule delayed call if within throttle window
+          // Cancel existing timeout to prevent accumulation
+          if (pendingTimeoutRef.current) {
+            clearTimeout(pendingTimeoutRef.current);
+            pendingTimeoutRef.current = null;
+          }
           const remainingTime = minInterval - timeSinceLastLoad;
-          setTimeout(() => {
+          pendingTimeoutRef.current = setTimeout(() => {
+            pendingTimeoutRef.current = null; // Clear ref when timeout fires
+            // Check again if still loading before executing
+            if (hls && 'loading' in hls && (hls as any).loading) {
+              return; // Already loading, skip
+            }
             const now = Date.now();
             if (now - lastLoadTimeRef.current >= minInterval) {
               lastLoadTimeRef.current = now;
@@ -258,12 +281,8 @@ export default function HLSVideoPlayer({
             }
           }, 2000);
 
-          // Also check on timeupdate for more responsive preloading
-          video.addEventListener('timeupdate', checkAndPreload);
-
           return () => {
             clearInterval(interval);
-            video.removeEventListener('timeupdate', checkAndPreload);
           };
         };
 
