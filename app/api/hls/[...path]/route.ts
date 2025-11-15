@@ -47,7 +47,7 @@ export async function GET(
       
       // Step 2: Rewrite all non-comment, non-empty lines
       const lines = text.split('\n');
-      const rewrittenLines = lines.map((line) => {
+      const rewrittenLines = lines.map((line, index) => {
         const trimmed = line.trim();
         
         // Keep comments and empty lines as-is
@@ -60,19 +60,27 @@ export async function GET(
           return line;
         }
         
-        // Skip if it's an external http/https URL (not localhost)
+        // Skip if it's an external http/https URL (not localhost - should have been rewritten in step 1)
         if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
           return line;
         }
         
-        // Handle absolute paths starting with /
+        // Handle absolute paths starting with / (like /segment/0.ts)
         if (trimmed.startsWith('/')) {
-          return '/api/hls' + trimmed;
+          const rewritten = '/api/hls' + trimmed;
+          if (process.env.NODE_ENV === 'development') {
+            console.log(`[HLS Proxy] Rewriting line ${index + 1}: "${trimmed}" -> "${rewritten}"`);
+          }
+          return rewritten;
         }
         
-        // Handle relative paths
-        if (trimmed) {
-          return baseProxyPath + trimmed;
+        // Handle relative paths (like segment/0.ts)
+        if (trimmed && !trimmed.startsWith('#')) {
+          const rewritten = baseProxyPath + trimmed;
+          if (process.env.NODE_ENV === 'development') {
+            console.log(`[HLS Proxy] Rewriting line ${index + 1}: "${trimmed}" -> "${rewritten}"`);
+          }
+          return rewritten;
         }
         
         return line;
