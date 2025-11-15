@@ -274,6 +274,12 @@ export default function HLSVideoPlayer({
             // Calculate adaptive prefetch distance based on bandwidth and buffer health
             const prefetchDistance = calculateAdaptivePrefetchDistance(networkBandwidth, bufferHealth);
 
+            // Check if HLS is already loading to prevent duplicate segment requests
+            // This provides an additional layer of protection beyond throttledStartLoad()
+            if (hls && 'loading' in hls && (hls as any).loading) {
+              return; // Already loading, skip to prevent duplicate requests
+            }
+
             // Preload if buffer is less than 5 segments OR less than adaptive distance ahead
             // This ensures minimum 5 segments while keeping adaptive optimization
             // YouTube-like: preload even when paused
