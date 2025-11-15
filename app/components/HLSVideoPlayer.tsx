@@ -1,11 +1,52 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 
 interface HLSVideoPlayerProps {
   hlsUrl?: string;
   className?: string;
+}
+
+// Network bandwidth detection utility
+function useNetworkBandwidth() {
+  const [bandwidth, setBandwidth] = useState<number | null>(null);
+
+  useEffect(() => {
+    if ('connection' in navigator) {
+      const connection = (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
+      if (connection) {
+        const updateBandwidth = () => {
+          // Get effective bandwidth estimate (in Mbps)
+          const effectiveType = connection.effectiveType;
+          const downlink = connection.downlink; // Mbps
+          
+          // Map effective type to approximate bandwidth
+          const bandwidthMap: { [key: string]: number } = {
+            'slow-2g': 0.5,
+            '2g': 1.5,
+            '3g': 3.5,
+            '4g': 10,
+          };
+          
+          const estimatedBandwidth = downlink || bandwidthMap[effectiveType] || 5;
+          setBandwidth(estimatedBandwidth * 1000000); // Convert to bps
+        };
+
+        updateBandwidth();
+        connection.addEventListener('change', updateBandwidth);
+        
+        return () => {
+          connection.removeEventListener('change', updateBandwidth);
+        };
+      }
+    }
+    
+    // Fallback: estimate based on HLS.js bandwidth
+    setBandwidth(5000000); // Default 5 Mbps
+  }, []);
+
+  return bandwidth;
 }
 
 export default function HLSVideoPlayer({
@@ -14,6 +55,19 @@ export default function HLSVideoPlayer({
 }: HLSVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  
+  // Loading state management
+  const [isLoading, setIsLoading] = useState(true);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [bufferingProgress, setBufferingProgress] = useState(0);
+  
+  // Quality selection state
+  const [availableLevels, setAvailableLevels] = useState<any[]>([]);
+  const [currentLevel, setCurrentLevel] = useState<number>(-1);
+  const [showQualitySelector, setShowQualitySelector] = useState(false);
+  
+  // Network bandwidth detection
+  const networkBandwidth = useNetworkBandwidth();
 
   useEffect(() => {
     const video = videoRef.current;
@@ -23,6 +77,14 @@ export default function HLSVideoPlayer({
       const hls = new Hls({
         enableWorker: false,
         lowLatencyMode: false,
+        // Adaptive Bitrate Streaming (ABR) configuration
+        maxBufferLength: 30, // Maximum buffer length in seconds
+        maxMaxBufferLength: 60, // Maximum max buffer length in seconds
+        startLevel: -1, // Auto-select initial quality level (-1 = auto)
+        capLevelToPlayerSize: true, // Cap quality to player size
+        abrEwmaDefaultEstimate: networkBandwidth || 500000, // Use detected bandwidth or default 500kbps
+        abrBandWidthFactor: 0.95, // Bandwidth factor for ABR
+        abrBandWidthUpFactor: 0.7, // Bandwidth up factor for ABR
       });
       hlsRef.current = hls;
 
@@ -57,13 +119,102 @@ export default function HLSVideoPlayer({
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         console.log('[HLS] Manifest parsed, video ready to play');
         console.log('[HLS] Levels:', hls.levels);
+        setIsLoading(false);
+        setAvailableLevels(hls.levels);
+        setCurrentLevel(hls.currentLevel);
+        
+        // Progressive loading: Preload next segments based on playback position
+        const setupProgressiveLoading = () => {
+          const checkAndPreload = () => {
+            if (!video || !hls) return;
+            
+            const currentTime = video.currentTime;
+            const buffered = video.buffered;
+            let bufferedEnd = 0;
+            
+            if (buffered.length > 0) {
+              bufferedEnd = buffered.end(buffered.length - 1);
+            }
+            
+            // Preload if buffer is less than 10 seconds ahead
+            const bufferAhead = bufferedEnd - currentTime;
+            if (bufferAhead < 10 && !video.paused) {
+              // Trigger HLS to load more segments
+              hls.startLoad();
+            }
+          };
+          
+          // Check buffer every 2 seconds during playback
+          const interval = setInterval(() => {
+            if (video && !video.paused) {
+              checkAndPreload();
+            }
+          }, 2000);
+          
+          // Also check on timeupdate for more responsive preloading
+          video.addEventListener('timeupdate', checkAndPreload);
+          
+          return () => {
+            clearInterval(interval);
+            video.removeEventListener('timeupdate', checkAndPreload);
+          };
+        };
+        
+        // Setup progressive loading after a short delay to ensure video is ready
+        setTimeout(setupProgressiveLoading, 1000);
       });
 
       hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
         console.log('[HLS] Level loaded:', data);
+        setCurrentLevel(hls.currentLevel);
       });
 
+      hls.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
+        console.log('[HLS] Level switched:', data);
+        setCurrentLevel(hls.currentLevel);
+      });
+
+      // Buffer monitoring event handlers
+      hls.on(Hls.Events.BUFFER_APPENDING, (event, data) => {
+        setIsBuffering(true);
+        console.log('[HLS] Buffer appending:', data);
+      });
+
+      hls.on(Hls.Events.BUFFER_APPENDED, (event, data) => {
+        const video = videoRef.current;
+        if (video) {
+          const buffered = video.buffered;
+          if (buffered.length > 0) {
+            const bufferedEnd = buffered.end(buffered.length - 1);
+            const currentTime = video.currentTime;
+            const bufferedAmount = bufferedEnd - currentTime;
+            const progress = Math.min((bufferedAmount / 30) * 100, 100); // 30s buffer target
+            setBufferingProgress(progress);
+            
+            if (bufferedAmount > 5) {
+              // Buffer is healthy (>5s ahead)
+              setIsBuffering(false);
+            }
+          }
+        }
+        console.log('[HLS] Buffer appended:', data);
+      });
+
+      // Monitor video element buffering state
+      const handleWaiting = () => {
+        setIsBuffering(true);
+      };
+      
+      const handleCanPlay = () => {
+        setIsBuffering(false);
+      };
+      
+      video.addEventListener('waiting', handleWaiting);
+      video.addEventListener('canplay', handleCanPlay);
+
       return () => {
+        video.removeEventListener('waiting', handleWaiting);
+        video.removeEventListener('canplay', handleCanPlay);
         hls.destroy();
       };
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -71,6 +222,7 @@ export default function HLSVideoPlayer({
       video.src = hlsUrl;
       // Don't auto-play, let user click play button
       console.log('HLS video source set, ready to play');
+      setIsLoading(false);
     }
 
     return () => {
@@ -78,7 +230,7 @@ export default function HLSVideoPlayer({
         hlsRef.current.destroy();
       }
     };
-  }, [hlsUrl]);
+  }, [hlsUrl, networkBandwidth]);
 
   return (
     <div className="absolute inset-0">
@@ -97,6 +249,67 @@ export default function HLSVideoPlayer({
       >
         {/* Video Element */}
         <video ref={videoRef} className={className} controls playsInline />
+
+        {/* Loading indicator */}
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+            <div className="text-white">Loading video...</div>
+          </div>
+        )}
+
+        {/* Buffering indicator */}
+        {isBuffering && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/30 z-10">
+            <div className="text-white">Buffering... {Math.round(bufferingProgress)}%</div>
+          </div>
+        )}
+
+        {/* Quality selector */}
+        {availableLevels.length > 0 && (
+          <div className="absolute top-4 right-4 z-20">
+            <button
+              onClick={() => setShowQualitySelector(!showQualitySelector)}
+              className="px-3 py-2 bg-black/70 text-white rounded-lg text-sm hover:bg-black/90 transition-colors"
+            >
+              Quality {currentLevel === -1 ? 'Auto' : availableLevels[currentLevel]?.height + 'p'}
+            </button>
+            {showQualitySelector && (
+              <div className="absolute top-full right-0 mt-2 bg-black/90 rounded-lg overflow-hidden min-w-[120px]">
+                <button
+                  onClick={() => {
+                    if (hlsRef.current) {
+                      hlsRef.current.currentLevel = -1;
+                      setCurrentLevel(-1);
+                      setShowQualitySelector(false);
+                    }
+                  }}
+                  className={`w-full px-4 py-2 text-left text-sm text-white hover:bg-white/10 ${
+                    currentLevel === -1 ? 'bg-white/20' : ''
+                  }`}
+                >
+                  Auto
+                </button>
+                {availableLevels.map((level, index) => (
+                  <button
+                    key={index}
+                    onClick={() => {
+                      if (hlsRef.current) {
+                        hlsRef.current.currentLevel = index;
+                        setCurrentLevel(index);
+                        setShowQualitySelector(false);
+                      }
+                    }}
+                    className={`w-full px-4 py-2 text-left text-sm text-white hover:bg-white/10 ${
+                      currentLevel === index ? 'bg-white/20' : ''
+                    }`}
+                  >
+                    {level.height}p
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Optional: Glass overlay for enhanced effect on desktop */}
         <div
