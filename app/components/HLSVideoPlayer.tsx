@@ -1,21 +1,97 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import Hls from 'hls.js';
+
+// Conditional logging - only log in development
+const isDevelopment = process.env.NODE_ENV === 'development';
+const debugLog = (...args: any[]) => {
+  if (isDevelopment) {
+    console.log(...args);
+  }
+};
+const debugError = (...args: any[]) => {
+  if (isDevelopment) {
+    console.error(...args);
+  }
+};
+const debugWarn = (...args: any[]) => {
+  if (isDevelopment) {
+    console.warn(...args);
+  }
+};
 
 interface HLSVideoPlayerProps {
   hlsUrl?: string;
   className?: string;
 }
 
+// Network Information API types (not fully supported in all browsers)
+interface NetworkInformation extends EventTarget {
+  effectiveType?: string;
+  downlink?: number;
+  addEventListener(type: 'change', listener: () => void): void;
+  removeEventListener(type: 'change', listener: () => void): void;
+}
+
+interface NavigatorWithConnection extends Navigator {
+  connection?: NetworkInformation;
+  mozConnection?: NetworkInformation;
+  webkitConnection?: NetworkInformation;
+}
+
+// HLS Level type
+interface HLSLevel {
+  width?: number;
+  height?: number;
+  bitrate?: number;
+  name?: string;
+  codecs?: string;
+}
+
+// Extended HLS type with loading property
+interface HLSWithLoading extends Hls {
+  loading?: boolean;
+}
+
+// Adaptive prefetch distance calculation (moved outside component for performance)
+function calculateAdaptivePrefetchDistance(bandwidth: number | null, bufferHealth: number): number {
+  // Convert bandwidth from bps to Mbps for easier comparison
+  const bandwidthMbps = bandwidth ? bandwidth / 1000000 : 5; // Default to 5 Mbps if null
+
+  let baseDistance: number;
+
+  if (bandwidthMbps > 10) {
+    // High bandwidth: prefetch 60+ seconds ahead (YouTube-like)
+    baseDistance = 60;
+  } else if (bandwidthMbps >= 3) {
+    // Medium bandwidth: prefetch 45+ seconds ahead (YouTube-like)
+    baseDistance = 45;
+  } else {
+    // Low bandwidth: prefetch 30+ seconds ahead (YouTube-like)
+    baseDistance = 30;
+  }
+
+  // Adjust based on buffer health: if buffer is low, increase prefetch distance
+  if (bufferHealth < 5) {
+    baseDistance *= 1.2; // Increase by 20% if buffer is low
+  }
+
+  return Math.round(baseDistance);
+}
+
 // Network bandwidth detection utility
 function useNetworkBandwidth() {
-  const [bandwidth, setBandwidth] = useState<number | null>(null);
+  // Use initial state instead of setState in effect to avoid cascading renders
+  const [bandwidth, setBandwidth] = useState<number | null>(() => {
+    // Initialize with default value
+    return 5000000; // Default 5 Mbps
+  });
 
   useEffect(() => {
     if ('connection' in navigator) {
-      const connection =
-        (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
+      const nav = navigator as NavigatorWithConnection;
+      const connection = nav.connection || nav.mozConnection || nav.webkitConnection;
       if (connection) {
         const updateBandwidth = () => {
           // Get effective bandwidth estimate (in Mbps)
@@ -30,7 +106,7 @@ function useNetworkBandwidth() {
             '4g': 10,
           };
 
-          const estimatedBandwidth = downlink || bandwidthMap[effectiveType] || 5;
+          const estimatedBandwidth = downlink || (effectiveType ? bandwidthMap[effectiveType] : undefined) || 5;
           setBandwidth(estimatedBandwidth * 1000000); // Convert to bps
         };
 
@@ -42,9 +118,6 @@ function useNetworkBandwidth() {
         };
       }
     }
-
-    // Fallback: estimate based on HLS.js bandwidth
-    setBandwidth(5000000); // Default 5 Mbps
   }, []);
 
   return bandwidth;
@@ -61,7 +134,7 @@ export default function HLSVideoPlayer({
   const [isLoading, setIsLoading] = useState(true);
 
   // Quality selection state
-  const [availableLevels, setAvailableLevels] = useState<any[]>([]);
+  const [availableLevels, setAvailableLevels] = useState<HLSLevel[]>([]);
   const [currentLevel, setCurrentLevel] = useState<number>(-1);
   const [showQualitySelector, setShowQualitySelector] = useState(false);
 
@@ -92,7 +165,7 @@ export default function HLSVideoPlayer({
 
     if (Hls.isSupported()) {
       const hls = new Hls({
-        enableWorker: false,
+        enableWorker: true, // Enable Web Worker for better performance
         lowLatencyMode: false,
         // Adaptive Bitrate Streaming (ABR) configuration
         maxBufferLength: 60, // Maximum buffer length in seconds (YouTube-like)
@@ -111,35 +184,35 @@ export default function HLSVideoPlayer({
           const video = videoRef.current;
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              console.error('[HLS] Fatal network error:', data.details, 'URL:', data.url);
-              console.error('[HLS] Trying to recover...');
+              debugError('[HLS] Fatal network error:', data.details, 'URL:', data.url);
+              debugError('[HLS] Trying to recover...');
               // Preserve current position before recovery
               if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
                 savedPositionRef.current = video.currentTime;
                 isRecoveringRef.current = true;
-                console.log('[HLS] Saved position before recovery:', savedPositionRef.current);
+                debugLog('[HLS] Saved position before recovery:', savedPositionRef.current);
               }
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
-              console.error('[HLS] Fatal media error:', data.details);
-              console.error('[HLS] Trying to recover...');
+              debugError('[HLS] Fatal media error:', data.details);
+              debugError('[HLS] Trying to recover...');
               // Preserve current position before recovery
               if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
                 savedPositionRef.current = video.currentTime;
                 isRecoveringRef.current = true;
-                console.log('[HLS] Saved position before recovery:', savedPositionRef.current);
+                debugLog('[HLS] Saved position before recovery:', savedPositionRef.current);
               }
               hls.recoverMediaError();
               break;
             default:
-              console.error('[HLS] Fatal error:', data.type, data.details);
-              console.error('[HLS] Destroying instance...');
+              debugError('[HLS] Fatal error:', data.type, data.details);
+              debugError('[HLS] Destroying instance...');
               hls.destroy();
               break;
           }
         } else {
-          console.warn('[HLS] Non-fatal error:', data.details);
+          debugWarn('[HLS] Non-fatal error:', data.details);
         }
       });
 
@@ -151,7 +224,7 @@ export default function HLSVideoPlayer({
       const throttledStartLoad = () => {
         // CRITICAL: Check if HLS is already loading to prevent duplicate requests
         // HLS.js has a 'loading' property that TypeScript types may not include
-        if (hls && 'loading' in hls && (hls as any).loading) {
+        if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
           return; // Already loading, skip to prevent duplicate segment requests
         }
 
@@ -180,7 +253,7 @@ export default function HLSVideoPlayer({
           pendingTimeoutRef.current = setTimeout(() => {
             pendingTimeoutRef.current = null; // Clear ref when timeout fires
             // Check again if still loading before executing
-            if (hls && 'loading' in hls && (hls as any).loading) {
+            if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
               return; // Already loading, skip
             }
             const now = Date.now();
@@ -195,8 +268,8 @@ export default function HLSVideoPlayer({
       };
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        console.log('[HLS] Manifest parsed, video ready to play');
-        console.log('[HLS] Levels:', hls.levels);
+        debugLog('[HLS] Manifest parsed, video ready to play');
+        debugLog('[HLS] Levels:', hls.levels);
         setIsLoading(false);
         setAvailableLevels(hls.levels);
         setCurrentLevel(hls.currentLevel);
@@ -211,7 +284,7 @@ export default function HLSVideoPlayer({
                 // Video has enough data to seek
                 video.currentTime = savedPositionRef.current;
                 isRecoveringRef.current = false;
-                console.log('[HLS] Position restored after recovery:', savedPositionRef.current);
+                debugLog('[HLS] Position restored after recovery:', savedPositionRef.current);
               } else {
                 // Wait a bit more for video to load
                 setTimeout(restorePosition, 100);
@@ -233,31 +306,6 @@ export default function HLSVideoPlayer({
         }
 
         // Progressive loading: Preload next segments based on playback position
-        // Adaptive prefetch distance calculation based on network bandwidth
-        const calculateAdaptivePrefetchDistance = (bandwidth: number | null, bufferHealth: number): number => {
-          // Convert bandwidth from bps to Mbps for easier comparison
-          const bandwidthMbps = bandwidth ? bandwidth / 1000000 : 5; // Default to 5 Mbps if null
-
-          let baseDistance: number;
-
-          if (bandwidthMbps > 10) {
-            // High bandwidth: prefetch 60+ seconds ahead (YouTube-like)
-            baseDistance = 60;
-          } else if (bandwidthMbps >= 3) {
-            // Medium bandwidth: prefetch 45+ seconds ahead (YouTube-like)
-            baseDistance = 45;
-          } else {
-            // Low bandwidth: prefetch 30+ seconds ahead (YouTube-like)
-            baseDistance = 30;
-          }
-
-          // Adjust based on buffer health: if buffer is low, increase prefetch distance
-          if (bufferHealth < 5) {
-            baseDistance *= 1.2; // Increase by 20% if buffer is low
-          }
-
-          return Math.round(baseDistance);
-        };
         const setupProgressiveLoading = () => {
           const checkAndPreload = () => {
             if (!video || !hls) return;
@@ -272,7 +320,7 @@ export default function HLSVideoPlayer({
                 // Time jump detected - likely a seek
                 isSeekingRef.current = true;
                 seekTargetRef.current = currentTime;
-                console.log('[HLS] Seek detected via time jump, target:', seekTargetRef.current);
+                debugLog('[HLS] Seek detected via time jump, target:', seekTargetRef.current);
               }
             }
             previousTimeRef.current = currentTime;
@@ -329,7 +377,7 @@ export default function HLSVideoPlayer({
 
             // Check if HLS is already loading to prevent duplicate segment requests
             // This provides an additional layer of protection beyond throttledStartLoad()
-            if (hls && 'loading' in hls && (hls as any).loading) {
+            if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
               return; // Already loading, skip to prevent duplicate requests
             }
 
@@ -342,18 +390,45 @@ export default function HLSVideoPlayer({
             }
           };
 
-          // Check buffer every 2 seconds continuously (YouTube-like: even when paused)
-          const interval = setInterval(() => {
-            if (video) {
+          // Event-driven buffer checking instead of polling for better performance
+          // Use timeupdate event (fires every ~250ms) combined with throttling
+          let lastCheckTime = 0;
+          const CHECK_INTERVAL = 2000; // Check every 2 seconds (throttled)
+
+          const handleTimeUpdate = () => {
+            const now = Date.now();
+            if (now - lastCheckTime >= CHECK_INTERVAL) {
+              lastCheckTime = now;
               checkAndPreload();
             }
-          }, 2000);
+          };
 
-          // YouTube-like: Start buffering immediately, not wait for interval
+          // Also check on play/pause events for immediate response
+          const handlePlay = () => {
+            checkAndPreload();
+            video.addEventListener('timeupdate', handleTimeUpdate);
+          };
+
+          const handlePause = () => {
+            video.removeEventListener('timeupdate', handleTimeUpdate);
+            // Still check once when paused to maintain buffer
+            checkAndPreload();
+          };
+
+          // Start buffering immediately
           checkAndPreload();
 
+          // Add event listeners
+          video.addEventListener('play', handlePlay);
+          video.addEventListener('pause', handlePause);
+          if (!video.paused) {
+            video.addEventListener('timeupdate', handleTimeUpdate);
+          }
+
           return () => {
-            clearInterval(interval);
+            video.removeEventListener('timeupdate', handleTimeUpdate);
+            video.removeEventListener('play', handlePlay);
+            video.removeEventListener('pause', handlePause);
           };
         };
 
@@ -362,22 +437,13 @@ export default function HLSVideoPlayer({
       });
 
       hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
-        console.log('[HLS] Level loaded:', data);
+        debugLog('[HLS] Level loaded:', data);
         setCurrentLevel(hls.currentLevel);
       });
 
       hls.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
-        console.log('[HLS] Level switched:', data);
+        debugLog('[HLS] Level switched:', data);
         setCurrentLevel(hls.currentLevel);
-      });
-
-      // Buffer monitoring event handlers
-      hls.on(Hls.Events.BUFFER_APPENDING, (event, data) => {
-        console.log('[HLS] Buffer appending:', data);
-      });
-
-      hls.on(Hls.Events.BUFFER_APPENDED, (event, data) => {
-        console.log('[HLS] Buffer appended:', data);
       });
 
       // Seeking detection event handlers
@@ -390,7 +456,7 @@ export default function HLSVideoPlayer({
           video.pause();
           isSeekingRef.current = true;
           seekTargetRef.current = video.currentTime;
-          console.log('[HLS] Seeking started, target:', seekTargetRef.current);
+          debugLog('[HLS] Seeking started, target:', seekTargetRef.current);
         }
       };
 
@@ -399,7 +465,7 @@ export default function HLSVideoPlayer({
         if (video && hls) {
           isSeekingRef.current = false;
           const newPosition = video.currentTime;
-          console.log('[HLS] Seeking completed, new position:', newPosition);
+          debugLog('[HLS] Seeking completed, new position:', newPosition);
           // Track seek completion time to prevent duplicate preload
           lastSeekTimeRef.current = Date.now();
           // Trigger immediate prefetch around seek position
@@ -407,7 +473,7 @@ export default function HLSVideoPlayer({
           // Resume playback if video was playing before seek
           if (wasPlayingBeforeSeekRef.current) {
             video.play().catch((error) => {
-              console.warn('[HLS] Failed to resume playback after seek:', error);
+              debugWarn('[HLS] Failed to resume playback after seek:', error);
             });
           }
         }
@@ -425,7 +491,7 @@ export default function HLSVideoPlayer({
       // Native HLS support (Safari)
       video.src = hlsUrl;
       // Don't auto-play, let user click play button
-      console.log('HLS video source set, ready to play');
+      debugLog('HLS video source set, ready to play');
       setIsLoading(false);
     }
 
