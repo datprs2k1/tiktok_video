@@ -70,6 +70,11 @@ export default function HLSVideoPlayer({
   // Network bandwidth detection
   const networkBandwidth = useNetworkBandwidth();
 
+  // Seeking detection refs
+  const isSeekingRef = useRef<boolean>(false);
+  const previousTimeRef = useRef<number>(0);
+  const seekTargetRef = useRef<number>(0);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -125,6 +130,31 @@ export default function HLSVideoPlayer({
         setCurrentLevel(hls.currentLevel);
 
         // Progressive loading: Preload next segments based on playback position
+        // Adaptive prefetch distance calculation based on network bandwidth
+        const calculateAdaptivePrefetchDistance = (bandwidth: number | null, bufferHealth: number): number => {
+          // Convert bandwidth from bps to Mbps for easier comparison
+          const bandwidthMbps = bandwidth ? bandwidth / 1000000 : 5; // Default to 5 Mbps if null
+          
+          let baseDistance: number;
+          
+          if (bandwidthMbps > 10) {
+            // High bandwidth: prefetch 30-60s ahead
+            baseDistance = 45;
+          } else if (bandwidthMbps >= 3) {
+            // Medium bandwidth: prefetch 15-30s ahead
+            baseDistance = 22.5;
+          } else {
+            // Low bandwidth: prefetch 10-15s ahead
+            baseDistance = 12.5;
+          }
+          
+          // Adjust based on buffer health: if buffer is low, increase prefetch distance
+          if (bufferHealth < 5) {
+            baseDistance *= 1.2; // Increase by 20% if buffer is low
+          }
+          
+          return Math.round(baseDistance);
+        };
         const setupProgressiveLoading = () => {
           const checkAndPreload = () => {
             if (!video || !hls) return;
@@ -137,9 +167,36 @@ export default function HLSVideoPlayer({
               bufferedEnd = buffered.end(buffered.length - 1);
             }
 
-            // Preload if buffer is less than 10 seconds ahead
             const bufferAhead = bufferedEnd - currentTime;
-            if (bufferAhead < 10 && !video.paused) {
+            const bufferHealth = bufferAhead; // Current buffer health in seconds
+            
+            // Seeking-aware prefetch: if seeking, prioritize segments around seek position
+            if (isSeekingRef.current) {
+              const seekTarget = seekTargetRef.current;
+              // Check if buffer around seek position is sufficient
+              let hasBufferAroundSeek = false;
+              for (let i = 0; i < buffered.length; i++) {
+                const start = buffered.start(i);
+                const end = buffered.end(i);
+                // Check if seek target is within buffered range or close (within 5s)
+                if (seekTarget >= start - 5 && seekTarget <= end + 5) {
+                  hasBufferAroundSeek = true;
+                  break;
+                }
+              }
+              
+              // If no buffer around seek position, trigger immediate load
+              if (!hasBufferAroundSeek) {
+                hls.startLoad();
+                return;
+              }
+            }
+            
+            // Calculate adaptive prefetch distance based on bandwidth and buffer health
+            const prefetchDistance = calculateAdaptivePrefetchDistance(networkBandwidth, bufferHealth);
+
+            // Preload if buffer is less than adaptive distance ahead
+            if (bufferAhead < prefetchDistance && !video.paused) {
               // Trigger HLS to load more segments
               hls.startLoad();
             }
@@ -159,7 +216,7 @@ export default function HLSVideoPlayer({
             clearInterval(interval);
             video.removeEventListener('timeupdate', checkAndPreload);
           };
-        };
+        };;
 
         // Setup progressive loading after a short delay to ensure video is ready
         setTimeout(setupProgressiveLoading, 1000);
@@ -213,9 +270,58 @@ export default function HLSVideoPlayer({
       video.addEventListener('waiting', handleWaiting);
       video.addEventListener('canplay', handleCanPlay);
 
+      // Seeking detection event handlers
+      const handleSeeking = () => {
+        const video = videoRef.current;
+        if (video) {
+          isSeekingRef.current = true;
+          seekTargetRef.current = video.currentTime;
+          console.log('[HLS] Seeking started, target:', seekTargetRef.current);
+        }
+      };
+
+      const handleSeeked = () => {
+        const video = videoRef.current;
+        if (video && hls) {
+          isSeekingRef.current = false;
+          const newPosition = video.currentTime;
+          console.log('[HLS] Seeking completed, new position:', newPosition);
+          // Trigger immediate prefetch around seek position
+          hls.startLoad();
+        }
+      };
+
+      // Detect seeking via time jumps (fallback method)
+      const handleTimeUpdate = () => {
+        const video = videoRef.current;
+        if (video) {
+          const currentTime = video.currentTime;
+          const timeDiff = Math.abs(currentTime - previousTimeRef.current);
+          
+          // If time jumps more than 2 seconds, it's likely a seek
+          if (timeDiff > 2 && !isSeekingRef.current) {
+            isSeekingRef.current = true;
+            seekTargetRef.current = currentTime;
+            console.log('[HLS] Seek detected via time jump, target:', seekTargetRef.current);
+            if (hls) {
+              hls.startLoad();
+            }
+          }
+          
+          previousTimeRef.current = currentTime;
+        }
+      };
+
+      video.addEventListener('seeking', handleSeeking);
+      video.addEventListener('seeked', handleSeeked);
+      video.addEventListener('timeupdate', handleTimeUpdate);
+
       return () => {
         video.removeEventListener('waiting', handleWaiting);
         video.removeEventListener('canplay', handleCanPlay);
+        video.removeEventListener('seeking', handleSeeking);
+        video.removeEventListener('seeked', handleSeeked);
+        video.removeEventListener('timeupdate', handleTimeUpdate);
         hls.destroy();
       };
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
