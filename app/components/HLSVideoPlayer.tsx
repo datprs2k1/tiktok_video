@@ -82,6 +82,10 @@ export default function HLSVideoPlayer({
   // Track play state before seeking to resume after seek completes
   const wasPlayingBeforeSeekRef = useRef<boolean>(false);
 
+  // Position preservation refs for error recovery
+  const savedPositionRef = useRef<number>(0);
+  const isRecoveringRef = useRef<boolean>(false);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -104,15 +108,28 @@ export default function HLSVideoPlayer({
       // Error handling
       hls.on(Hls.Events.ERROR, (event, data) => {
         if (data.fatal) {
+          const video = videoRef.current;
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
               console.error('[HLS] Fatal network error:', data.details, 'URL:', data.url);
               console.error('[HLS] Trying to recover...');
+              // Preserve current position before recovery
+              if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
+                savedPositionRef.current = video.currentTime;
+                isRecoveringRef.current = true;
+                console.log('[HLS] Saved position before recovery:', savedPositionRef.current);
+              }
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
               console.error('[HLS] Fatal media error:', data.details);
               console.error('[HLS] Trying to recover...');
+              // Preserve current position before recovery
+              if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
+                savedPositionRef.current = video.currentTime;
+                isRecoveringRef.current = true;
+                console.log('[HLS] Saved position before recovery:', savedPositionRef.current);
+              }
               hls.recoverMediaError();
               break;
             default:
@@ -184,6 +201,37 @@ export default function HLSVideoPlayer({
         setAvailableLevels(hls.levels);
         setCurrentLevel(hls.currentLevel);
 
+        // Restore position after error recovery
+        if (isRecoveringRef.current && savedPositionRef.current > 0) {
+          const video = videoRef.current;
+          if (video) {
+            // Wait for video to be ready before restoring position
+            const restorePosition = () => {
+              if (video.readyState >= 2) {
+                // Video has enough data to seek
+                video.currentTime = savedPositionRef.current;
+                isRecoveringRef.current = false;
+                console.log('[HLS] Position restored after recovery:', savedPositionRef.current);
+              } else {
+                // Wait a bit more for video to load
+                setTimeout(restorePosition, 100);
+              }
+            };
+            // Try to restore immediately, or wait if video not ready
+            if (video.readyState >= 2) {
+              restorePosition();
+            } else {
+              video.addEventListener('loadeddata', restorePosition, { once: true });
+              // Fallback timeout
+              setTimeout(() => {
+                if (isRecoveringRef.current) {
+                  restorePosition();
+                }
+              }, 1000);
+            }
+          }
+        }
+
         // Progressive loading: Preload next segments based on playback position
         // Adaptive prefetch distance calculation based on network bandwidth
         const calculateAdaptivePrefetchDistance = (bandwidth: number | null, bufferHealth: number): number => {
@@ -217,12 +265,15 @@ export default function HLSVideoPlayer({
             const currentTime = video.currentTime;
 
             // Integrated seeking detection via time jumps (consolidated from handleTimeUpdate)
-            const timeDiff = Math.abs(currentTime - previousTimeRef.current);
-            if (timeDiff > 2 && !isSeekingRef.current) {
-              // Time jump detected - likely a seek
-              isSeekingRef.current = true;
-              seekTargetRef.current = currentTime;
-              console.log('[HLS] Seek detected via time jump, target:', seekTargetRef.current);
+            // Skip seeking detection during recovery to avoid false positives from buffer reset
+            if (!isRecoveringRef.current) {
+              const timeDiff = Math.abs(currentTime - previousTimeRef.current);
+              if (timeDiff > 2 && !isSeekingRef.current) {
+                // Time jump detected - likely a seek
+                isSeekingRef.current = true;
+                seekTargetRef.current = currentTime;
+                console.log('[HLS] Seek detected via time jump, target:', seekTargetRef.current);
+              }
             }
             previousTimeRef.current = currentTime;
 
