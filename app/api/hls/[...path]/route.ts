@@ -26,49 +26,63 @@ export async function GET(
 
     // If it's a playlist file, rewrite URLs
     if (contentType.includes('application/vnd.apple.mpegurl') || path.endsWith('.m3u8')) {
-      const text = await response.text();
+      let text = await response.text();
+      
+      // Log original for debugging
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`[HLS Proxy] Original playlist ${path}:`, text.substring(0, 500));
+      }
+      
       // Get the base path of the current playlist (directory path)
       const pathParts = path.split('/');
       pathParts.pop(); // Remove filename
       const basePath = pathParts.length > 0 ? pathParts.join('/') + '/' : '';
       const baseProxyPath = `/api/hls/${basePath}`;
       
-      // Rewrite absolute URLs to use proxy
-      let rewritten = text.replace(
-        /(https?:\/\/127\.0\.0\.1:8080\/|http:\/\/127\.0\.0\.1:8080\/)/g,
+      // Step 1: Rewrite absolute URLs (http://127.0.0.1:8080/...)
+      text = text.replace(
+        /https?:\/\/127\.0\.0\.1:8080\//g,
         '/api/hls/'
       );
       
-      // Rewrite all URLs in playlist (lines that don't start with # and are not empty)
-      rewritten = rewritten.split('\n').map((line) => {
+      // Step 2: Rewrite all non-comment, non-empty lines
+      const lines = text.split('\n');
+      const rewrittenLines = lines.map((line) => {
         const trimmed = line.trim();
-        // Skip comments and empty lines
+        
+        // Keep comments and empty lines as-is
         if (trimmed.startsWith('#') || trimmed === '') {
           return line;
         }
-        // Skip if already rewritten to use proxy
+        
+        // Skip if already rewritten
         if (trimmed.startsWith('/api/hls/')) {
           return line;
         }
-        // Skip if it's already an http/https URL (should have been rewritten above)
+        
+        // Skip if it's an external http/https URL (not localhost)
         if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
           return line;
         }
-        // If it starts with /, it's an absolute path from root - rewrite to use proxy
+        
+        // Handle absolute paths starting with /
         if (trimmed.startsWith('/')) {
           return '/api/hls' + trimmed;
         }
-        // Otherwise it's a relative path - make it relative to the proxy base path
+        
+        // Handle relative paths
         if (trimmed) {
           return baseProxyPath + trimmed;
         }
+        
         return line;
-      }).join('\n');
+      });
       
-      body = rewritten;
-      // Log for debugging (remove in production)
+      body = rewrittenLines.join('\n');
+      
+      // Log rewritten for debugging
       if (process.env.NODE_ENV === 'development') {
-        console.log(`[HLS Proxy] Rewritten playlist ${path}:`, rewritten.substring(0, 500));
+        console.log(`[HLS Proxy] Rewritten playlist ${path}:`, body.substring(0, 500));
       }
     } else {
       // For segment files, return as array buffer
