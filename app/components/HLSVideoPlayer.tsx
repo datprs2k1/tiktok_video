@@ -77,6 +77,8 @@ export default function HLSVideoPlayer({
   const lastLoadTimeRef = useRef<number>(0);
   // Timeout tracking to prevent multiple setTimeout callbacks from accumulating
   const pendingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Track seek completion time to prevent duplicate preload after seek
+  const lastSeekTimeRef = useRef<number>(0);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -255,6 +257,14 @@ export default function HLSVideoPlayer({
               return; // handleSeeked() is the sole handler for seeking-triggered loads
             }
 
+            // Skip normal prefetch if seek completed recently (within last 1 second)
+            // This prevents checkAndPreload() from triggering load right after seek,
+            // giving handleSeeked() exclusive control during immediate post-seek period
+            const timeSinceSeek = Date.now() - lastSeekTimeRef.current;
+            if (timeSinceSeek < 1000) {
+              return; // Skip normal prefetch if seek completed within last 1 second
+            }
+
             // Normal prefetch logic (only runs when not seeking)
             // Segment duration: 10 seconds per segment (fixed)
             const SEGMENT_DURATION = 10;
@@ -323,6 +333,8 @@ export default function HLSVideoPlayer({
           isSeekingRef.current = false;
           const newPosition = video.currentTime;
           console.log('[HLS] Seeking completed, new position:', newPosition);
+          // Track seek completion time to prevent duplicate preload
+          lastSeekTimeRef.current = Date.now();
           // Trigger immediate prefetch around seek position
           throttledStartLoad();
         }
