@@ -79,6 +79,8 @@ export default function HLSVideoPlayer({
   const pendingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Track seek completion time to prevent duplicate preload after seek
   const lastSeekTimeRef = useRef<number>(0);
+  // Track play state before seeking to resume after seek completes
+  const wasPlayingBeforeSeekRef = useRef<boolean>(false);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -331,13 +333,17 @@ export default function HLSVideoPlayer({
       const handleSeeking = () => {
         const video = videoRef.current;
         if (video) {
+          // Save play state before seeking to resume after seek completes
+          wasPlayingBeforeSeekRef.current = !video.paused;
+          // Pause video to ensure both video and audio tracks stop during seek
+          video.pause();
           isSeekingRef.current = true;
           seekTargetRef.current = video.currentTime;
           console.log('[HLS] Seeking started, target:', seekTargetRef.current);
         }
       };
 
-      const handleSeeked = () => {
+      const const handleSeeked = () => {
         const video = videoRef.current;
         if (video && hls) {
           isSeekingRef.current = false;
@@ -347,8 +353,14 @@ export default function HLSVideoPlayer({
           lastSeekTimeRef.current = Date.now();
           // Trigger immediate prefetch around seek position
           throttledStartLoad();
+          // Resume playback if video was playing before seek
+          if (wasPlayingBeforeSeekRef.current) {
+            video.play().catch((error) => {
+              console.warn('[HLS] Failed to resume playback after seek:', error);
+            });
+          }
         }
-      };
+      };;
 
       video.addEventListener('seeking', handleSeeking);
       video.addEventListener('seeked', handleSeeked);
