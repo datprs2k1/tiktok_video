@@ -234,10 +234,11 @@ export default function HLSVideoPlayer({
             const bufferAhead = bufferedEnd - currentTime;
             const bufferHealth = bufferAhead; // Current buffer health in seconds
 
-            // Optimized seeking-aware prefetch: only check when actually seeking
+            // Seeking detection: track seeking state for information/logging
+            // Note: Seeking-triggered loads are handled by handleSeeked() to prevent duplicates
             if (isSeekingRef.current) {
               const seekTarget = seekTargetRef.current;
-              // Optimized: Check if buffer around seek position is sufficient (early exit)
+              // Check if buffer around seek position is sufficient (for information only)
               let hasBufferAroundSeek = false;
               for (let i = 0; i < buffered.length; i++) {
                 const start = buffered.start(i);
@@ -248,13 +249,7 @@ export default function HLSVideoPlayer({
                   break; // Early exit when found
                 }
               }
-
-              // If no buffer around seek position, trigger immediate load and return early
-              if (!hasBufferAroundSeek) {
-                throttledStartLoad();
-                return; // Early return - no need to check normal prefetch
-              }
-              // If buffer exists around seek, continue to normal prefetch check below
+              // Continue to normal prefetch check below (handleSeeked() handles seeking-triggered loads)
             }
 
             // Normal prefetch logic (only runs if not seeking or if seeking but buffer exists)
