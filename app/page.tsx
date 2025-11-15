@@ -11,7 +11,7 @@ export default function Home() {
     const video = videoRef.current;
     if (!video) return;
 
-    const hlsUrl = 'http://127.0.0.1:8080/playlist.m3u8';
+    const hlsUrl = '/api/hls/playlist.m3u8';
 
     if (Hls.isSupported()) {
       const hls = new Hls();
