@@ -32,14 +32,42 @@ export default function Home() {
           
           xhr.open('GET', proxiedUrl, true);
         },
+        enableWorker: false, // Disable worker to avoid CORS issues
+        lowLatencyMode: false,
       });
       hlsRef.current = hls;
+      
+      // Error handling
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        console.error('[HLS Error]', data);
+        if (data.fatal) {
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              console.error('[HLS] Fatal network error, trying to recover...');
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              console.error('[HLS] Fatal media error, trying to recover...');
+              hls.recoverMediaError();
+              break;
+            default:
+              console.error('[HLS] Fatal error, destroying instance...');
+              hls.destroy();
+              break;
+          }
+        }
+      });
+      
       hls.loadSource(hlsUrl);
       hls.attachMedia(video);
+      
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        // Video is ready, but don't auto-play due to browser autoplay policy
-        // User can click play button to start playback
-        console.log('HLS manifest parsed, video ready to play');
+        console.log('[HLS] Manifest parsed, video ready to play');
+        console.log('[HLS] Levels:', hls.levels);
+      });
+      
+      hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
+        console.log('[HLS] Level loaded:', data);
       });
 
       return () => {
