@@ -28,15 +28,6 @@ export default function HLSVideoPlayer({
 
       // Error handling
       hls.on(Hls.Events.ERROR, (event, data) => {
-        console.error('[HLS Error]', {
-          type: data.type,
-          details: data.details,
-          fatal: data.fatal,
-          url: data.url,
-          error: data.error,
-          response: data.response,
-        });
-
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
@@ -89,5 +80,36 @@ export default function HLSVideoPlayer({
     };
   }, [hlsUrl]);
 
-  return <video ref={videoRef} className={className} controls playsInline />;
+  return (
+    <div className="relative w-full h-full">
+      {/* Glassmorphism Container - Mobile optimized */}
+      <div className="
+        relative w-full h-full
+        backdrop-blur-md
+        bg-white/5 dark:bg-black/20
+        border border-white/10 dark:border-white/20
+        rounded-xl md:rounded-2xl
+        shadow-lg md:shadow-2xl
+        overflow-hidden
+        transition-all duration-300
+      ">
+        {/* Video Element */}
+        <video 
+          ref={videoRef} 
+          className={className}
+          controls 
+          playsInline
+        />
+        
+        {/* Optional: Glass overlay for enhanced effect on desktop */}
+        <div className="
+          hidden md:block
+          absolute inset-0
+          pointer-events-none
+          bg-gradient-to-br from-white/5 to-transparent
+          rounded-xl md:rounded-2xl
+        " />
+      </div>
+    </div>
+  );
 }
