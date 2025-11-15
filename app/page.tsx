@@ -19,9 +19,9 @@ export default function Home() {
       hls.loadSource(hlsUrl);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        video.play().catch((error) => {
-          console.error('Error playing video:', error);
-        });
+        // Video is ready, but don't auto-play due to browser autoplay policy
+        // User can click play button to start playback
+        console.log('HLS manifest parsed, video ready to play');
       });
 
       return () => {
@@ -30,9 +30,8 @@ export default function Home() {
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       // Native HLS support (Safari)
       video.src = hlsUrl;
-      video.play().catch((error) => {
-        console.error('Error playing video:', error);
-      });
+      // Don't auto-play, let user click play button
+      console.log('HLS video source set, ready to play');
     }
 
     return () => {
