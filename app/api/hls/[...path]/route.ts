@@ -48,42 +48,55 @@ export async function GET(
       // Step 2: Rewrite all non-comment, non-empty lines
       const lines = text.split('\n');
       const rewrittenLines = lines.map((line, index) => {
+        const originalLine = line;
         const trimmed = line.trim();
         
         // Keep comments and empty lines as-is
         if (trimmed.startsWith('#') || trimmed === '') {
-          return line;
+          return originalLine;
         }
         
-        // Skip if already rewritten
+        // Skip if already rewritten to proxy
         if (trimmed.startsWith('/api/hls/')) {
-          return line;
+          return originalLine;
         }
         
-        // Skip if it's an external http/https URL (not localhost - should have been rewritten in step 1)
+        // Rewrite absolute URLs from HLS server (should have been caught in step 1, but double-check)
+        if (trimmed.startsWith('http://127.0.0.1:8080/') || trimmed.startsWith('https://127.0.0.1:8080/')) {
+          const rewritten = trimmed.replace(/https?:\/\/127\.0\.0\.1:8080\//, '/api/hls/');
+          if (process.env.NODE_ENV === 'development') {
+            console.log(`[HLS Proxy] Rewriting absolute URL line ${index + 1}: "${trimmed}" -> "${rewritten}"`);
+          }
+          // Preserve original line formatting (whitespace)
+          return line.replace(trimmed, rewritten);
+        }
+        
+        // Skip if it's an external http/https URL (not localhost)
         if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-          return line;
+          return originalLine;
         }
         
         // Handle absolute paths starting with / (like /segment/0.ts)
         if (trimmed.startsWith('/')) {
           const rewritten = '/api/hls' + trimmed;
           if (process.env.NODE_ENV === 'development') {
-            console.log(`[HLS Proxy] Rewriting line ${index + 1}: "${trimmed}" -> "${rewritten}"`);
+            console.log(`[HLS Proxy] Rewriting absolute path line ${index + 1}: "${trimmed}" -> "${rewritten}"`);
           }
-          return rewritten;
+          // Preserve original line formatting (whitespace)
+          return line.replace(trimmed, rewritten);
         }
         
         // Handle relative paths (like segment/0.ts)
         if (trimmed && !trimmed.startsWith('#')) {
           const rewritten = baseProxyPath + trimmed;
           if (process.env.NODE_ENV === 'development') {
-            console.log(`[HLS Proxy] Rewriting line ${index + 1}: "${trimmed}" -> "${rewritten}"`);
+            console.log(`[HLS Proxy] Rewriting relative path line ${index + 1}: "${trimmed}" -> "${rewritten}"`);
           }
-          return rewritten;
+          // Preserve original line formatting (whitespace)
+          return line.replace(trimmed, rewritten);
         }
         
-        return line;
+        return originalLine;
       });
       
       body = rewrittenLines.join('\n');
