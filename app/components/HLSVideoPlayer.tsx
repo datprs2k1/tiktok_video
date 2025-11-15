@@ -9,7 +9,7 @@ interface HLSVideoPlayerProps {
 }
 
 export default function HLSVideoPlayer({
-  hlsUrl = 'http://127.0.0.1:8080/playlist.m3u8',
+  hlsUrl = 'http://160.250.181.190:8080/playlist.m3u8',
   className = 'absolute inset-0 h-full w-full rounded-lg',
 }: HLSVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -83,7 +83,8 @@ export default function HLSVideoPlayer({
   return (
     <div className="absolute inset-0">
       {/* Glassmorphism Container - Mobile optimized */}
-      <div className="
+      <div
+        className="
         relative w-full h-full
         backdrop-blur-md
         bg-white/5 dark:bg-black/20
@@ -92,23 +93,21 @@ export default function HLSVideoPlayer({
         shadow-lg md:shadow-2xl
         overflow-hidden
         transition-all duration-300
-      ">
+      "
+      >
         {/* Video Element */}
-        <video 
-          ref={videoRef} 
-          className={className}
-          controls 
-          playsInline
-        />
-        
+        <video ref={videoRef} className={className} controls playsInline />
+
         {/* Optional: Glass overlay for enhanced effect on desktop */}
-        <div className="
+        <div
+          className="
           hidden md:block
           absolute inset-0
           pointer-events-none
           bg-gradient-to-br from-white/5 to-transparent
           rounded-xl md:rounded-2xl
-        " />
+        "
+        />
       </div>
     </div>
   );
