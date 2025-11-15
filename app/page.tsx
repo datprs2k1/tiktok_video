@@ -18,7 +18,7 @@ export default function Home() {
         xhrSetup: (xhr, url) => {
           // Rewrite URLs to use proxy
           let proxiedUrl = url;
-          
+
           // Handle absolute URLs from HLS server
           if (url.startsWith('http://127.0.0.1:8080/') || url.startsWith('https://127.0.0.1:8080/')) {
             proxiedUrl = url.replace(/https?:\/\/127\.0\.0\.1:8080\//, '/api/hls/');
@@ -29,43 +29,56 @@ export default function Home() {
             proxiedUrl = '/api/hls' + url;
             console.log(`[HLS] Rewriting relative URL: ${url} -> ${proxiedUrl}`);
           }
-          
+
           xhr.open('GET', proxiedUrl, true);
         },
         enableWorker: false, // Disable worker to avoid CORS issues
         lowLatencyMode: false,
       });
       hlsRef.current = hls;
-      
+
       // Error handling
       hls.on(Hls.Events.ERROR, (event, data) => {
-        console.error('[HLS Error]', data);
+        console.error('[HLS Error]', {
+          type: data.type,
+          details: data.details,
+          fatal: data.fatal,
+          url: data.url,
+          error: data.error,
+          response: data.response,
+        });
+        
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              console.error('[HLS] Fatal network error, trying to recover...');
+              console.error('[HLS] Fatal network error:', data.details, 'URL:', data.url);
+              console.error('[HLS] Trying to recover...');
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
-              console.error('[HLS] Fatal media error, trying to recover...');
+              console.error('[HLS] Fatal media error:', data.details);
+              console.error('[HLS] Trying to recover...');
               hls.recoverMediaError();
               break;
             default:
-              console.error('[HLS] Fatal error, destroying instance...');
+              console.error('[HLS] Fatal error:', data.type, data.details);
+              console.error('[HLS] Destroying instance...');
               hls.destroy();
               break;
           }
+        } else {
+          console.warn('[HLS] Non-fatal error:', data.details);
         }
       });
-      
+
       hls.loadSource(hlsUrl);
       hls.attachMedia(video);
-      
+
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         console.log('[HLS] Manifest parsed, video ready to play');
         console.log('[HLS] Levels:', hls.levels);
       });
-      
+
       hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
         console.log('[HLS] Level loaded:', data);
       });
