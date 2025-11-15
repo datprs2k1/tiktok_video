@@ -14,7 +14,18 @@ export default function Home() {
     const hlsUrl = '/api/hls/playlist.m3u8';
 
     if (Hls.isSupported()) {
-      const hls = new Hls();
+      const hls = new Hls({
+        xhrSetup: (xhr, url) => {
+          // Rewrite segment URLs to use proxy
+          if (url.startsWith('/') && !url.startsWith('/api/hls/')) {
+            const proxiedUrl = '/api/hls' + url;
+            console.log(`[HLS] Rewriting URL: ${url} -> ${proxiedUrl}`);
+            xhr.open('GET', proxiedUrl, true);
+          } else {
+            xhr.open('GET', url, true);
+          }
+        },
+      });
       hlsRef.current = hls;
       hls.loadSource(hlsUrl);
       hls.attachMedia(video);
