@@ -51,7 +51,7 @@ function useNetworkBandwidth() {
 }
 
 export default function HLSVideoPlayer({
-  hlsUrl = 'http://160.250.181.190:8080/playlist.m3u8',
+  hlsUrl = 'https://tiktok.datprs.store/playlist.m3u8',
   className = 'absolute inset-0 h-full w-full rounded-lg',
 }: HLSVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
