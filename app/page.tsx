@@ -16,14 +16,21 @@ export default function Home() {
     if (Hls.isSupported()) {
       const hls = new Hls({
         xhrSetup: (xhr, url) => {
-          // Rewrite segment URLs to use proxy
-          if (url.startsWith('/') && !url.startsWith('/api/hls/')) {
-            const proxiedUrl = '/api/hls' + url;
-            console.log(`[HLS] Rewriting URL: ${url} -> ${proxiedUrl}`);
-            xhr.open('GET', proxiedUrl, true);
-          } else {
-            xhr.open('GET', url, true);
+          // Rewrite URLs to use proxy
+          let proxiedUrl = url;
+          
+          // Handle absolute URLs from HLS server
+          if (url.startsWith('http://127.0.0.1:8080/') || url.startsWith('https://127.0.0.1:8080/')) {
+            proxiedUrl = url.replace(/https?:\/\/127\.0\.0\.1:8080\//, '/api/hls/');
+            console.log(`[HLS] Rewriting absolute URL: ${url} -> ${proxiedUrl}`);
           }
+          // Handle relative paths starting with /
+          else if (url.startsWith('/') && !url.startsWith('/api/hls/')) {
+            proxiedUrl = '/api/hls' + url;
+            console.log(`[HLS] Rewriting relative URL: ${url} -> ${proxiedUrl}`);
+          }
+          
+          xhr.open('GET', proxiedUrl, true);
         },
       });
       hlsRef.current = hls;
