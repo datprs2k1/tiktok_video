@@ -89,7 +89,7 @@ export default function HLSVideoPlayer({
         enableWorker: false,
         lowLatencyMode: false,
         // Adaptive Bitrate Streaming (ABR) configuration
-        maxBufferLength: 30, // Maximum buffer length in seconds
+        maxBufferLength: 60, // Maximum buffer length in seconds (YouTube-like)
         maxMaxBufferLength: 60, // Maximum max buffer length in seconds
         startLevel: -1, // Auto-select initial quality level (-1 = auto)
         capLevelToPlayerSize: true, // Cap quality to player size
@@ -191,14 +191,14 @@ export default function HLSVideoPlayer({
           let baseDistance: number;
 
           if (bandwidthMbps > 10) {
-            // High bandwidth: prefetch 30-60s ahead
-            baseDistance = 45;
+            // High bandwidth: prefetch 60+ seconds ahead (YouTube-like)
+            baseDistance = 60;
           } else if (bandwidthMbps >= 3) {
-            // Medium bandwidth: prefetch 15-30s ahead
-            baseDistance = 22.5;
+            // Medium bandwidth: prefetch 45+ seconds ahead (YouTube-like)
+            baseDistance = 45;
           } else {
-            // Low bandwidth: prefetch 10-15s ahead
-            baseDistance = 12.5;
+            // Low bandwidth: prefetch 30+ seconds ahead (YouTube-like)
+            baseDistance = 30;
           }
 
           // Adjust based on buffer health: if buffer is low, increase prefetch distance
@@ -269,25 +269,29 @@ export default function HLSVideoPlayer({
             // Segment duration: 10 seconds per segment (fixed)
             const SEGMENT_DURATION = 10;
             const bufferedSegments = Math.floor(bufferAhead / SEGMENT_DURATION);
-            const minSegments = 2; // Minimum 2 segments required
+            const minSegments = 5; // Minimum 5 segments required (YouTube-like: 4-6 segments)
 
             // Calculate adaptive prefetch distance based on bandwidth and buffer health
             const prefetchDistance = calculateAdaptivePrefetchDistance(networkBandwidth, bufferHealth);
 
-            // Preload if buffer is less than 2 segments OR less than adaptive distance ahead
-            // This ensures minimum 2 segments while keeping adaptive optimization
-            if ((bufferedSegments < minSegments || bufferAhead < prefetchDistance) && !video.paused) {
+            // Preload if buffer is less than 5 segments OR less than adaptive distance ahead
+            // This ensures minimum 5 segments while keeping adaptive optimization
+            // YouTube-like: preload even when paused
+            if (bufferedSegments < minSegments || bufferAhead < prefetchDistance) {
               // Trigger HLS to load more segments
               throttledStartLoad();
             }
           };
 
-          // Check buffer every 2 seconds during playback
+          // Check buffer every 2 seconds continuously (YouTube-like: even when paused)
           const interval = setInterval(() => {
-            if (video && !video.paused) {
+            if (video) {
               checkAndPreload();
             }
           }, 2000);
+
+          // YouTube-like: Start buffering immediately, not wait for interval
+          checkAndPreload();
 
           return () => {
             clearInterval(interval);
