@@ -343,7 +343,7 @@ export default function HLSVideoPlayer({
         }
       };
 
-      const const handleSeeked = () => {
+      const handleSeeked = () => {
         const video = videoRef.current;
         if (video && hls) {
           isSeekingRef.current = false;
@@ -360,7 +360,7 @@ export default function HLSVideoPlayer({
             });
           }
         }
-      };;
+      };
 
       video.addEventListener('seeking', handleSeeking);
       video.addEventListener('seeked', handleSeeked);
