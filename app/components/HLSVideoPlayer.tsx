@@ -9,7 +9,7 @@ interface HLSVideoPlayerProps {
 }
 
 export default function HLSVideoPlayer({
-  hlsUrl = '/api/hls/playlist.m3u8',
+  hlsUrl = 'http://127.0.0.1:8080/playlist.m3u8',
   className = 'absolute inset-0 h-full w-full rounded-lg',
 }: HLSVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -21,26 +21,7 @@ export default function HLSVideoPlayer({
 
     if (Hls.isSupported()) {
       const hls = new Hls({
-        xhrSetup: (xhr, url) => {
-          // Rewrite URLs to use proxy
-          let proxiedUrl = url;
-
-          console.log(`[HLS] Original URL: ${url}`);
-
-          // Handle absolute URLs from HLS server
-          if (url.startsWith('http://127.0.0.1:8080/') || url.startsWith('https://127.0.0.1:8080/')) {
-            proxiedUrl = url.replace(/https?:\/\/127\.0\.0\.1:8080\//, '/api/hls/');
-            console.log(`[HLS] Rewriting absolute URL: ${url} -> ${proxiedUrl}`);
-          }
-          // Handle relative paths starting with /
-          else if (url.startsWith('/') && !url.startsWith('/api/hls/')) {
-            proxiedUrl = '/api/hls' + url;
-            console.log(`[HLS] Rewriting relative URL: ${url} -> ${proxiedUrl}`);
-          }
-
-          xhr.open('GET', proxiedUrl, true);
-        },
-        enableWorker: false, // Disable worker to avoid CORS issues
+        enableWorker: false,
         lowLatencyMode: false,
       });
       hlsRef.current = hls;
@@ -110,4 +91,3 @@ export default function HLSVideoPlayer({
 
   return <video ref={videoRef} className={className} controls playsInline />;
 }
-
