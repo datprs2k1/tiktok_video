@@ -14,13 +14,14 @@ function useNetworkBandwidth() {
 
   useEffect(() => {
     if ('connection' in navigator) {
-      const connection = (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
+      const connection =
+        (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
       if (connection) {
         const updateBandwidth = () => {
           // Get effective bandwidth estimate (in Mbps)
           const effectiveType = connection.effectiveType;
           const downlink = connection.downlink; // Mbps
-          
+
           // Map effective type to approximate bandwidth
           const bandwidthMap: { [key: string]: number } = {
             'slow-2g': 0.5,
@@ -28,20 +29,20 @@ function useNetworkBandwidth() {
             '3g': 3.5,
             '4g': 10,
           };
-          
+
           const estimatedBandwidth = downlink || bandwidthMap[effectiveType] || 5;
           setBandwidth(estimatedBandwidth * 1000000); // Convert to bps
         };
 
         updateBandwidth();
         connection.addEventListener('change', updateBandwidth);
-        
+
         return () => {
           connection.removeEventListener('change', updateBandwidth);
         };
       }
     }
-    
+
     // Fallback: estimate based on HLS.js bandwidth
     setBandwidth(5000000); // Default 5 Mbps
   }, []);
@@ -55,17 +56,17 @@ export default function HLSVideoPlayer({
 }: HLSVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
-  
+
   // Loading state management
   const [isLoading, setIsLoading] = useState(true);
   const [isBuffering, setIsBuffering] = useState(false);
   const [bufferingProgress, setBufferingProgress] = useState(0);
-  
+
   // Quality selection state
   const [availableLevels, setAvailableLevels] = useState<any[]>([]);
   const [currentLevel, setCurrentLevel] = useState<number>(-1);
   const [showQualitySelector, setShowQualitySelector] = useState(false);
-  
+
   // Network bandwidth detection
   const networkBandwidth = useNetworkBandwidth();
 
@@ -122,20 +123,20 @@ export default function HLSVideoPlayer({
         setIsLoading(false);
         setAvailableLevels(hls.levels);
         setCurrentLevel(hls.currentLevel);
-        
+
         // Progressive loading: Preload next segments based on playback position
         const setupProgressiveLoading = () => {
           const checkAndPreload = () => {
             if (!video || !hls) return;
-            
+
             const currentTime = video.currentTime;
             const buffered = video.buffered;
             let bufferedEnd = 0;
-            
+
             if (buffered.length > 0) {
               bufferedEnd = buffered.end(buffered.length - 1);
             }
-            
+
             // Preload if buffer is less than 10 seconds ahead
             const bufferAhead = bufferedEnd - currentTime;
             if (bufferAhead < 10 && !video.paused) {
@@ -143,23 +144,23 @@ export default function HLSVideoPlayer({
               hls.startLoad();
             }
           };
-          
+
           // Check buffer every 2 seconds during playback
           const interval = setInterval(() => {
             if (video && !video.paused) {
               checkAndPreload();
             }
           }, 2000);
-          
+
           // Also check on timeupdate for more responsive preloading
           video.addEventListener('timeupdate', checkAndPreload);
-          
+
           return () => {
             clearInterval(interval);
             video.removeEventListener('timeupdate', checkAndPreload);
           };
         };
-        
+
         // Setup progressive loading after a short delay to ensure video is ready
         setTimeout(setupProgressiveLoading, 1000);
       });
@@ -190,7 +191,7 @@ export default function HLSVideoPlayer({
             const bufferedAmount = bufferedEnd - currentTime;
             const progress = Math.min((bufferedAmount / 30) * 100, 100); // 30s buffer target
             setBufferingProgress(progress);
-            
+
             if (bufferedAmount > 5) {
               // Buffer is healthy (>5s ahead)
               setIsBuffering(false);
@@ -204,11 +205,11 @@ export default function HLSVideoPlayer({
       const handleWaiting = () => {
         setIsBuffering(true);
       };
-      
+
       const handleCanPlay = () => {
         setIsBuffering(false);
       };
-      
+
       video.addEventListener('waiting', handleWaiting);
       video.addEventListener('canplay', handleCanPlay);
 
