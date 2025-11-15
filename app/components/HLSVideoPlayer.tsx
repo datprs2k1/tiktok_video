@@ -250,7 +250,12 @@ export default function HLSVideoPlayer({
               // Continue to normal prefetch check below (handleSeeked() handles seeking-triggered loads)
             }
 
-            // Normal prefetch logic (only runs if not seeking or if seeking but buffer exists)
+            // Skip normal prefetch during seeking to prevent duplicates with handleSeeked()
+            if (isSeekingRef.current) {
+              return; // handleSeeked() is the sole handler for seeking-triggered loads
+            }
+
+            // Normal prefetch logic (only runs when not seeking)
             // Segment duration: 10 seconds per segment (fixed)
             const SEGMENT_DURATION = 10;
             const bufferedSegments = Math.floor(bufferAhead / SEGMENT_DURATION);
