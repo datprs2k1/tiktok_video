@@ -235,11 +235,17 @@ export default function HLSVideoPlayer({
             }
 
             // Normal prefetch logic (only runs if not seeking or if seeking but buffer exists)
+            // Segment duration: 10 seconds per segment (fixed)
+            const SEGMENT_DURATION = 10;
+            const bufferedSegments = Math.floor(bufferAhead / SEGMENT_DURATION);
+            const minSegments = 2; // Minimum 2 segments required
+
             // Calculate adaptive prefetch distance based on bandwidth and buffer health
             const prefetchDistance = calculateAdaptivePrefetchDistance(networkBandwidth, bufferHealth);
 
-            // Preload if buffer is less than adaptive distance ahead
-            if (bufferAhead < prefetchDistance && !video.paused) {
+            // Preload if buffer is less than 2 segments OR less than adaptive distance ahead
+            // This ensures minimum 2 segments while keeping adaptive optimization
+            if ((bufferedSegments < minSegments || bufferAhead < prefetchDistance) && !video.paused) {
               // Trigger HLS to load more segments
               throttledStartLoad();
             }
