@@ -465,7 +465,7 @@ export default function HLSVideoPlayer({
             const resumePlayback = () => {
               const video = videoRef.current;
               if (!video) return;
-              
+
               // Check if video has enough data to play
               if (video.readyState >= 2) {
                 // Video has enough data, try to play
@@ -519,7 +519,7 @@ export default function HLSVideoPlayer({
                 }, 1000);
               }
             };
-            
+
             // Use requestAnimationFrame for better timing
             requestAnimationFrame(() => {
               resumePlayback();
@@ -827,17 +827,11 @@ export default function HLSVideoPlayer({
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full group"
+      className="relative w-full h-full group video-player-container"
       onMouseMove={resetControlsTimeout}
       onMouseLeave={() => isPlaying && setShowControls(false)}
       onTouchStart={resetControlsTimeout}
     >
-      {/* Liquid Glass Background Effect */}
-      <div className="absolute inset-0 overflow-hidden rounded-2xl">
-        <div className="absolute inset-0 liquid-glass-bg" />
-        <div className="absolute inset-0 liquid-glass-overlay" />
-      </div>
-
       {/* Video Element */}
       <video
         ref={videoRef}
@@ -849,46 +843,45 @@ export default function HLSVideoPlayer({
 
       {/* Loading indicator */}
       {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center z-30">
-          <div className="liquid-glass-card p-8 rounded-2xl">
-            <div className="loading-spinner" />
-            <p className="mt-4 text-white/90 text-sm font-medium">Đang tải video...</p>
+        <div className="absolute inset-0 flex items-center justify-center z-30 video-loading-overlay">
+          <div className="video-loading-card">
+            <div className="video-loading-spinner" />
+            <p className="video-loading-text">Đang tải video...</p>
           </div>
         </div>
       )}
 
       {/* Custom Controls Overlay */}
       <div
-        className={`absolute inset-0 z-20 transition-opacity duration-300 ${
+        className={`absolute inset-0 z-20 video-controls-overlay transition-opacity duration-300 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
         {/* Center Play/Pause Button */}
-        <div className="absolute inset-0 flex items-center justify-center" onClick={togglePlayPause}>
+        <div
+          className="absolute inset-0 flex items-center justify-center video-center-control"
+          onClick={togglePlayPause}
+        >
           <button
             className={`
-              liquid-glass-button
-              w-20 h-20 md:w-24 md:h-24
-              rounded-full
-              flex items-center justify-center
-              transition-all duration-300
-              ${showControls ? 'scale-100 opacity-100' : 'scale-75 opacity-0'}
-              ${isPlaying ? 'hidden' : 'block'}
+              video-play-button
+              transition-all duration-300 ease-out
+              ${showControls && !isPlaying ? 'scale-100 opacity-100' : 'scale-75 opacity-0 pointer-events-none'}
             `}
             aria-label={isPlaying ? 'Pause' : 'Play'}
           >
-            <svg className="w-10 h-10 md:w-12 md:h-12 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+            <svg className="video-play-icon" fill="currentColor" viewBox="0 0 24 24">
               <path d="M8 5v14l11-7z" />
             </svg>
           </button>
         </div>
 
         {/* Bottom Controls Bar */}
-        <div className="absolute bottom-0 left-0 right-0 liquid-glass-controls p-3 md:p-4">
+        <div className="absolute bottom-0 left-0 right-0 video-controls-bar">
           {/* Progress Bar */}
           <div
             ref={progressBarRef}
-            className="relative h-1.5 md:h-2 mb-3 md:mb-4 cursor-pointer group/progress"
+            className="video-progress-container"
             onClick={handleSeek}
             onTouchStart={(e) => {
               setIsDragging(true);
@@ -909,55 +902,45 @@ export default function HLSVideoPlayer({
             onMouseLeave={() => setIsDragging(false)}
           >
             {/* Buffered progress */}
-            <div className="absolute inset-0 bg-white/20 rounded-full" style={{ width: `${buffered}%` }} />
+            <div className="video-progress-buffered" style={{ width: `${buffered}%` }} />
             {/* Current progress */}
-            <div
-              className="absolute inset-0 bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-500 rounded-full transition-all duration-150"
-              style={{ width: `${(currentTime / duration) * 100}%` }}
-            />
+            <div className="video-progress-current" style={{ width: `${(currentTime / duration) * 100}%` }} />
             {/* Progress handle */}
-            <div
-              className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg opacity-0 group-hover/progress:opacity-100 transition-opacity"
-              style={{ left: `${(currentTime / duration) * 100}%`, transform: 'translate(-50%, -50%)' }}
-            />
+            <div className="video-progress-handle" style={{ left: `${(currentTime / duration) * 100}%` }} />
           </div>
 
           {/* Control Buttons */}
-          <div className="flex items-center gap-2 md:gap-4">
+          <div className="video-controls-row">
             {/* Play/Pause */}
             <button
               onClick={togglePlayPause}
-              className="liquid-glass-button-icon"
+              className="video-control-button"
               aria-label={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? (
-                <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
                 </svg>
               ) : (
-                <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M8 5v14l11-7z" />
                 </svg>
               )}
             </button>
 
             {/* Volume Control */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={toggleMute}
-                className="liquid-glass-button-icon"
-                aria-label={isMuted ? 'Unmute' : 'Mute'}
-              >
+            <div className="video-volume-container">
+              <button onClick={toggleMute} className="video-control-button" aria-label={isMuted ? 'Unmute' : 'Mute'}>
                 {isMuted || volume === 0 ? (
-                  <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" />
                   </svg>
                 ) : volume < 0.5 ? (
-                  <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M18.83 16h-2.75l-1-1H12v-6h3.08l1-1H18.83v8zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
                   </svg>
                 ) : (
-                  <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
                   </svg>
                 )}
@@ -966,7 +949,7 @@ export default function HLSVideoPlayer({
               {/* Volume Slider */}
               <div
                 ref={volumeBarRef}
-                className="hidden md:flex items-center w-24 h-1.5 cursor-pointer group/volume"
+                className="video-volume-slider"
                 onClick={handleVolumeChange}
                 onMouseDown={(e) => {
                   setIsVolumeDragging(true);
@@ -978,38 +961,32 @@ export default function HLSVideoPlayer({
                 onMouseUp={() => setIsVolumeDragging(false)}
                 onMouseLeave={() => setIsVolumeDragging(false)}
               >
-                <div className="relative w-full h-full bg-white/20 rounded-full">
-                  <div
-                    className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full transition-all"
-                    style={{ width: `${(isMuted ? 0 : volume) * 100}%` }}
-                  />
-                  <div
-                    className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-md opacity-0 group-hover/volume:opacity-100 transition-opacity"
-                    style={{ left: `${(isMuted ? 0 : volume) * 100}%`, transform: 'translate(-50%, -50%)' }}
-                  />
+                <div className="video-volume-track">
+                  <div className="video-volume-fill" style={{ width: `${(isMuted ? 0 : volume) * 100}%` }} />
+                  <div className="video-volume-handle" style={{ left: `${(isMuted ? 0 : volume) * 100}%` }} />
                 </div>
               </div>
             </div>
 
             {/* Time Display */}
-            <div className="flex-1 text-white/90 text-xs md:text-sm font-medium tabular-nums">
+            <div className="video-time-display">
               {formattedCurrentTime} / {formattedDuration}
             </div>
 
             {/* Quality Selector */}
             {availableLevels.length > 0 && (
-              <div className="relative">
+              <div className="video-quality-container">
                 <button
                   onClick={() => setShowQualitySelector(!showQualitySelector)}
-                  className="liquid-glass-button-icon"
+                  className="video-control-button"
                   aria-label="Quality settings"
                 >
-                  <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
                   </svg>
                 </button>
                 {showQualitySelector && (
-                  <div className="absolute bottom-full right-0 mb-2 liquid-glass-card rounded-xl overflow-hidden min-w-[140px] shadow-2xl">
+                  <div className="video-quality-menu">
                     <button
                       onClick={() => {
                         if (hlsRef.current) {
@@ -1018,13 +995,11 @@ export default function HLSVideoPlayer({
                           setShowQualitySelector(false);
                         }
                       }}
-                      className={`w-full px-4 py-3 text-left text-sm text-white hover:bg-white/10 transition-colors ${
-                        currentLevel === -1 ? 'bg-white/20' : ''
-                      }`}
+                      className={`video-quality-option ${currentLevel === -1 ? 'video-quality-option-active' : ''}`}
                     >
-                      <span className="flex items-center gap-2">
+                      <span className="video-quality-option-content">
                         <span>Auto</span>
-                        {currentLevel === -1 && <span className="text-cyan-400">✓</span>}
+                        {currentLevel === -1 && <span className="video-quality-check">✓</span>}
                       </span>
                     </button>
                     {availableLevels.map((level, index) => (
@@ -1037,13 +1012,13 @@ export default function HLSVideoPlayer({
                             setShowQualitySelector(false);
                           }
                         }}
-                        className={`w-full px-4 py-3 text-left text-sm text-white hover:bg-white/10 transition-colors ${
-                          currentLevel === index ? 'bg-white/20' : ''
+                        className={`video-quality-option ${
+                          currentLevel === index ? 'video-quality-option-active' : ''
                         }`}
                       >
-                        <span className="flex items-center gap-2">
+                        <span className="video-quality-option-content">
                           <span>{level.height}p</span>
-                          {currentLevel === index && <span className="text-cyan-400">✓</span>}
+                          {currentLevel === index && <span className="video-quality-check">✓</span>}
                         </span>
                       </button>
                     ))}
@@ -1055,15 +1030,15 @@ export default function HLSVideoPlayer({
             {/* Fullscreen */}
             <button
               onClick={toggleFullscreen}
-              className="liquid-glass-button-icon"
+              className="video-control-button"
               aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
             >
               {isFullscreen ? (
-                <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
                 </svg>
               ) : (
-                <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
                 </svg>
               )}
