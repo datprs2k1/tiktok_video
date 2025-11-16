@@ -416,7 +416,8 @@ export default function HLSVideoPlayer({
           // Save play state BEFORE pausing to ensure correct state is captured
           // Always update to ensure we have the correct state (manual seek may have set it, but double-check)
           // This ensures wasPlayingBeforeSeekRef is always accurate
-          wasPlayingBeforeSeekRef.current = !video.paused || wasPlayingBeforeSeekRef.current;
+          // Check ref first to preserve value if already set (by handleSeek or handleDoubleTap), then fallback to video state
+          wasPlayingBeforeSeekRef.current = wasPlayingBeforeSeekRef.current || !video.paused;
           // Cancel any pending play promise
           if (pendingPlayPromiseRef.current) {
             pendingPlayPromiseRef.current = null;
@@ -807,9 +808,13 @@ export default function HLSVideoPlayer({
 
         if (x < width / 2) {
           // Left side - seek backward 10s
+          // Save play state before seeking (similar to handleSeek)
+          wasPlayingBeforeSeekRef.current = !video.paused;
           video.currentTime = Math.max(0, video.currentTime - 10);
         } else {
           // Right side - seek forward 10s
+          // Save play state before seeking (similar to handleSeek)
+          wasPlayingBeforeSeekRef.current = !video.paused;
           video.currentTime = Math.min(duration, video.currentTime + 10);
         }
         lastTapRef.current = 0;
