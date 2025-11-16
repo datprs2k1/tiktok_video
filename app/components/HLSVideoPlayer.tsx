@@ -161,7 +161,7 @@ export default function HLSVideoPlayer({
   const lastLoadTimeRef = useRef<number>(0);
   // Timeout tracking to prevent multiple setTimeout callbacks from accumulating
   const pendingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  
+
   // Throttled wrapper for hls.startLoad() - moved to component level
   const throttledStartLoad = useCallback(() => {
     const hls = hlsRef.current;
@@ -222,6 +222,15 @@ export default function HLSVideoPlayer({
   // Position preservation refs for error recovery
   const savedPositionRef = useRef<number>(0);
   const isRecoveringRef = useRef<boolean>(false);
+
+  // Helper function to save position before error recovery (eliminates duplication)
+  const savePositionForRecovery = useCallback((video: HTMLVideoElement | null) => {
+    if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
+      savedPositionRef.current = video.currentTime;
+      isRecoveringRef.current = true;
+      debugLog('[HLS] Saved position before recovery:', savedPositionRef.current);
+    }
+  }, []);
 
   // Throttled buffer checking - moved to component level for accessibility
   const lastCheckTimeRef = useRef<number>(0);
@@ -285,12 +294,6 @@ export default function HLSVideoPlayer({
     // Calculate adaptive prefetch distance based on bandwidth and buffer health
     const prefetchDistance = calculateAdaptivePrefetchDistance(networkBandwidth, bufferHealth);
 
-    // Check if HLS is already loading to prevent duplicate segment requests
-    // This provides an additional layer of protection beyond throttledStartLoad()
-    if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
-      return; // Already loading, skip to prevent duplicate requests
-    }
-
     // Preload if buffer is less than 5 segments OR less than adaptive distance ahead
     // This ensures minimum 5 segments while keeping adaptive optimization
     // YouTube-like: preload even when paused
@@ -337,22 +340,14 @@ export default function HLSVideoPlayer({
               debugError('[HLS] Fatal network error:', data.details, 'URL:', data.url);
               debugError('[HLS] Trying to recover...');
               // Preserve current position before recovery
-              if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
-                savedPositionRef.current = video.currentTime;
-                isRecoveringRef.current = true;
-                debugLog('[HLS] Saved position before recovery:', savedPositionRef.current);
-              }
-              hls.startLoad();
+              savePositionForRecovery(video);
+              throttledStartLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
               debugError('[HLS] Fatal media error:', data.details);
               debugError('[HLS] Trying to recover...');
               // Preserve current position before recovery
-              if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
-                savedPositionRef.current = video.currentTime;
-                isRecoveringRef.current = true;
-                debugLog('[HLS] Saved position before recovery:', savedPositionRef.current);
-              }
+              savePositionForRecovery(video);
               hls.recoverMediaError();
               break;
             default:
