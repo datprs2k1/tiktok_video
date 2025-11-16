@@ -214,8 +214,6 @@ export default function HLSVideoPlayer({
   const lastSeekTimeRef = useRef<number>(0);
   // Track play state before seeking to resume after seek completes
   const wasPlayingBeforeSeekRef = useRef<boolean>(false);
-  // Track if play state was set from manual seek (progress bar)
-  const playStateSetFromManualSeekRef = useRef<boolean>(false);
   // Track pending play promise to avoid interruptions
   const pendingPlayPromiseRef = useRef<Promise<void> | null>(null);
 
@@ -414,10 +412,11 @@ export default function HLSVideoPlayer({
         const video = videoRef.current;
         if (video) {
           // Save play state BEFORE pausing to ensure correct state is captured
-          // Always update to ensure we have the correct state (manual seek may have set it, but double-check)
-          // This ensures wasPlayingBeforeSeekRef is always accurate
-          // Check ref first to preserve value if already set (by handleSeek or handleDoubleTap), then fallback to video state
-          wasPlayingBeforeSeekRef.current = wasPlayingBeforeSeekRef.current || !video.paused;
+          // Only update if ref hasn't been set yet (by handleSeek or handleDoubleTap)
+          // This preserves the value set by manual seek handlers and only updates for programmatic seeks
+          if (!wasPlayingBeforeSeekRef.current) {
+            wasPlayingBeforeSeekRef.current = !video.paused;
+          }
           // Cancel any pending play promise
           if (pendingPlayPromiseRef.current) {
             pendingPlayPromiseRef.current = null;
@@ -526,8 +525,6 @@ export default function HLSVideoPlayer({
               resumePlayback();
             });
           }
-          // Reset manual seek flag
-          playStateSetFromManualSeekRef.current = false;
         }
       };
 
@@ -729,7 +726,6 @@ export default function HLSVideoPlayer({
 
       // Save play state before seeking (important for manual seek via progress bar)
       wasPlayingBeforeSeekRef.current = !video.paused;
-      playStateSetFromManualSeekRef.current = true; // Mark that we set this from manual seek
 
       // Set new time - this will trigger seeking/seeked events
       video.currentTime = newTime;
