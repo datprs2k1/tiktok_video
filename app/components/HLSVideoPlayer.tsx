@@ -234,6 +234,59 @@ export default function HLSVideoPlayer({
     }
   }, []);
 
+  // Helper function to calculate percent from mouse/touch event (eliminates duplication)
+  const calculatePercentFromEvent = useCallback(
+    (element: HTMLElement, e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>): number => {
+      // Use offsetX/offsetY when available (relative to element, no layout recalculation)
+      // Fallback to getBoundingClientRect for touch events
+      if ('touches' in e) {
+        // Touch event: use getBoundingClientRect
+        const rect = element.getBoundingClientRect();
+        const clientX = e.touches[0].clientX;
+        return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      } else {
+        // Mouse event: use offsetX (relative to element, more efficient)
+        const offsetX = e.nativeEvent.offsetX ?? e.clientX - element.getBoundingClientRect().left;
+        return Math.max(0, Math.min(1, offsetX / element.offsetWidth));
+      }
+    },
+    []
+  );
+
+  // Helper function to play video with promise handling (eliminates duplication)
+  const playVideoWithPromise = useCallback(
+    (video: HTMLVideoElement, onSuccess?: () => void, onError?: (error: Error) => void) => {
+      // Clear any pending play promise
+      pendingPlayPromiseRef.current = null;
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        pendingPlayPromiseRef.current = playPromise;
+        playPromise
+          .then(() => {
+            pendingPlayPromiseRef.current = null;
+            if (onSuccess) onSuccess();
+          })
+          .catch((error) => {
+            pendingPlayPromiseRef.current = null;
+            // Ignore "interrupted" errors as they're expected during seeking or quick user actions
+            if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
+              if (onError) {
+                onError(error);
+              } else {
+                debugWarn('[Video] Play failed:', error);
+              }
+            }
+          });
+      }
+    },
+    []
+  );
+
+  // Helper function to save play state before seeking (eliminates duplication)
+  const savePlayStateBeforeSeek = useCallback((video: HTMLVideoElement) => {
+    wasPlayingBeforeSeekRef.current = !video.paused;
+  }, []);
+
   // Throttled buffer checking - moved to component level for accessibility
   const lastCheckTimeRef = useRef<number>(0);
   const CHECK_INTERVAL = 2000; // Check every 2 seconds (throttled)
@@ -459,8 +512,6 @@ export default function HLSVideoPlayer({
           throttledStartLoad();
           // Resume playback if video was playing before seek
           if (wasPlaying) {
-            // Clear any pending play promise
-            pendingPlayPromiseRef.current = null;
             // Resume playback - use requestAnimationFrame for better timing
             const resumePlayback = () => {
               const video = videoRef.current;
@@ -470,43 +521,22 @@ export default function HLSVideoPlayer({
               if (video.readyState >= 2) {
                 // Video has enough data, try to play
                 if (video.paused) {
-                  const playPromise = video.play();
-                  if (playPromise !== undefined) {
-                    pendingPlayPromiseRef.current = playPromise;
-                    playPromise
-                      .then(() => {
-                        pendingPlayPromiseRef.current = null;
-                        debugLog('[HLS] Playback resumed after seek');
-                      })
-                      .catch((error) => {
-                        pendingPlayPromiseRef.current = null;
-                        // Ignore "interrupted" errors as they're expected during seeking
-                        if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
-                          debugWarn('[HLS] Failed to resume playback after seek:', error);
-                        }
-                      });
-                  }
+                  playVideoWithPromise(
+                    video,
+                    () => debugLog('[HLS] Playback resumed after seek'),
+                    (error) => debugWarn('[HLS] Failed to resume playback after seek:', error)
+                  );
                 }
               } else {
                 // Video not ready yet, wait for canplay event
                 const onCanPlay = () => {
                   video.removeEventListener('canplay', onCanPlay);
                   if (video.paused) {
-                    const playPromise = video.play();
-                    if (playPromise !== undefined) {
-                      pendingPlayPromiseRef.current = playPromise;
-                      playPromise
-                        .then(() => {
-                          pendingPlayPromiseRef.current = null;
-                          debugLog('[HLS] Playback resumed after seek (via canplay)');
-                        })
-                        .catch((error) => {
-                          pendingPlayPromiseRef.current = null;
-                          if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
-                            debugWarn('[HLS] Failed to resume playback after seek:', error);
-                          }
-                        });
-                    }
+                    playVideoWithPromise(
+                      video,
+                      () => debugLog('[HLS] Playback resumed after seek (via canplay)'),
+                      (error) => debugWarn('[HLS] Failed to resume playback after seek:', error)
+                    );
                   }
                 };
                 video.addEventListener('canplay', onCanPlay, { once: true });
@@ -675,23 +705,7 @@ export default function HLSVideoPlayer({
     if (!video) return;
 
     if (video.paused) {
-      // Clear any pending play promise
-      pendingPlayPromiseRef.current = null;
-      const playPromise = video.play();
-      if (playPromise !== undefined) {
-        pendingPlayPromiseRef.current = playPromise;
-        playPromise
-          .then(() => {
-            pendingPlayPromiseRef.current = null;
-          })
-          .catch((error) => {
-            pendingPlayPromiseRef.current = null;
-            // Ignore "interrupted" errors - they're expected if user clicks pause quickly
-            if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
-              debugWarn('[Video] Play failed:', error);
-            }
-          });
-      }
+      playVideoWithPromise(video);
     } else {
       // Cancel any pending play promise before pausing
       if (pendingPlayPromiseRef.current) {
@@ -700,7 +714,7 @@ export default function HLSVideoPlayer({
       video.pause();
     }
     resetControlsTimeout();
-  }, [resetControlsTimeout]);
+  }, [resetControlsTimeout, playVideoWithPromise]);
 
   // Seek handler
   const handleSeek = useCallback(
@@ -709,30 +723,18 @@ export default function HLSVideoPlayer({
       const progressBar = progressBarRef.current;
       if (!video || !progressBar) return;
 
-      // Use offsetX/offsetY when available (relative to element, no layout recalculation)
-      // Fallback to getBoundingClientRect for touch events
-      let percent: number;
-      if ('touches' in e) {
-        // Touch event: use getBoundingClientRect
-        const rect = progressBar.getBoundingClientRect();
-        const clientX = e.touches[0].clientX;
-        percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      } else {
-        // Mouse event: use offsetX (relative to element, more efficient)
-        const offsetX = e.nativeEvent.offsetX ?? e.clientX - progressBar.getBoundingClientRect().left;
-        percent = Math.max(0, Math.min(1, offsetX / progressBar.offsetWidth));
-      }
+      const percent = calculatePercentFromEvent(progressBar, e);
       const newTime = percent * duration;
 
       // Save play state before seeking (important for manual seek via progress bar)
-      wasPlayingBeforeSeekRef.current = !video.paused;
+      savePlayStateBeforeSeek(video);
 
       // Set new time - this will trigger seeking/seeked events
+      // Note: setCurrentTime is handled by handleTimeUpdate, no need to set it here
       video.currentTime = newTime;
-      setCurrentTime(newTime);
       resetControlsTimeout();
     },
-    [duration, resetControlsTimeout]
+    [duration, resetControlsTimeout, calculatePercentFromEvent, savePlayStateBeforeSeek]
   );
 
   // Volume handler
@@ -742,26 +744,14 @@ export default function HLSVideoPlayer({
       const volumeBar = volumeBarRef.current;
       if (!video || !volumeBar) return;
 
-      // Use offsetX/offsetY when available (relative to element, no layout recalculation)
-      // Fallback to getBoundingClientRect for touch events
-      let percent: number;
-      if ('touches' in e) {
-        // Touch event: use getBoundingClientRect
-        const rect = volumeBar.getBoundingClientRect();
-        const clientX = e.touches[0].clientX;
-        percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      } else {
-        // Mouse event: use offsetX (relative to element, more efficient)
-        const offsetX = e.nativeEvent.offsetX ?? e.clientX - volumeBar.getBoundingClientRect().left;
-        percent = Math.max(0, Math.min(1, offsetX / volumeBar.offsetWidth));
-      }
+      const percent = calculatePercentFromEvent(volumeBar, e);
 
       video.volume = percent;
       setVolume(percent);
       setIsMuted(percent === 0);
       resetControlsTimeout();
     },
-    [resetControlsTimeout]
+    [resetControlsTimeout, calculatePercentFromEvent]
   );
 
   // Toggle mute
@@ -804,13 +794,11 @@ export default function HLSVideoPlayer({
 
         if (x < width / 2) {
           // Left side - seek backward 10s
-          // Save play state before seeking (similar to handleSeek)
-          wasPlayingBeforeSeekRef.current = !video.paused;
+          savePlayStateBeforeSeek(video);
           video.currentTime = Math.max(0, video.currentTime - 10);
         } else {
           // Right side - seek forward 10s
-          // Save play state before seeking (similar to handleSeek)
-          wasPlayingBeforeSeekRef.current = !video.paused;
+          savePlayStateBeforeSeek(video);
           video.currentTime = Math.min(duration, video.currentTime + 10);
         }
         lastTapRef.current = 0;
@@ -818,7 +806,7 @@ export default function HLSVideoPlayer({
         lastTapRef.current = now;
       }
     },
-    [duration]
+    [duration, savePlayStateBeforeSeek]
   );
 
   // Memoize formatted time strings to avoid recalculating on every render
