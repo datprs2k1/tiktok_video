@@ -428,7 +428,12 @@ export default function HLSVideoPlayer({
           }
           isSeekingRef.current = true;
           seekTargetRef.current = video.currentTime;
-          debugLog('[HLS] Seeking started, target:', seekTargetRef.current, 'wasPlaying:', wasPlayingBeforeSeekRef.current);
+          debugLog(
+            '[HLS] Seeking started, target:',
+            seekTargetRef.current,
+            'wasPlaying:',
+            wasPlayingBeforeSeekRef.current
+          );
         }
       };
 
@@ -447,28 +452,69 @@ export default function HLSVideoPlayer({
           if (wasPlaying) {
             // Clear any pending play promise
             pendingPlayPromiseRef.current = null;
-            // Use setTimeout to ensure video is ready after seek completes
-            setTimeout(() => {
+            // Resume playback - use requestAnimationFrame for better timing
+            const resumePlayback = () => {
               const video = videoRef.current;
-              if (video && video.paused) {
-                const playPromise = video.play();
-                if (playPromise !== undefined) {
-                  pendingPlayPromiseRef.current = playPromise;
-                  playPromise
-                    .then(() => {
-                      pendingPlayPromiseRef.current = null;
-                      debugLog('[HLS] Playback resumed after seek');
-                    })
-                    .catch((error) => {
-                      pendingPlayPromiseRef.current = null;
-                      // Ignore "interrupted" errors as they're expected during seeking
-                      if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
-                        debugWarn('[HLS] Failed to resume playback after seek:', error);
-                      }
-                    });
+              if (!video) return;
+              
+              // Check if video has enough data to play
+              if (video.readyState >= 2) {
+                // Video has enough data, try to play
+                if (video.paused) {
+                  const playPromise = video.play();
+                  if (playPromise !== undefined) {
+                    pendingPlayPromiseRef.current = playPromise;
+                    playPromise
+                      .then(() => {
+                        pendingPlayPromiseRef.current = null;
+                        debugLog('[HLS] Playback resumed after seek');
+                      })
+                      .catch((error) => {
+                        pendingPlayPromiseRef.current = null;
+                        // Ignore "interrupted" errors as they're expected during seeking
+                        if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
+                          debugWarn('[HLS] Failed to resume playback after seek:', error);
+                        }
+                      });
+                  }
                 }
+              } else {
+                // Video not ready yet, wait for canplay event
+                const onCanPlay = () => {
+                  video.removeEventListener('canplay', onCanPlay);
+                  if (video.paused) {
+                    const playPromise = video.play();
+                    if (playPromise !== undefined) {
+                      pendingPlayPromiseRef.current = playPromise;
+                      playPromise
+                        .then(() => {
+                          pendingPlayPromiseRef.current = null;
+                          debugLog('[HLS] Playback resumed after seek (via canplay)');
+                        })
+                        .catch((error) => {
+                          pendingPlayPromiseRef.current = null;
+                          if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
+                            debugWarn('[HLS] Failed to resume playback after seek:', error);
+                          }
+                        });
+                    }
+                  }
+                };
+                video.addEventListener('canplay', onCanPlay, { once: true });
+                // Fallback timeout in case canplay doesn't fire
+                setTimeout(() => {
+                  video.removeEventListener('canplay', onCanPlay);
+                  if (video.paused && wasPlayingBeforeSeekRef.current) {
+                    resumePlayback();
+                  }
+                }, 1000);
               }
-            }, 0);
+            };
+            
+            // Use requestAnimationFrame for better timing
+            requestAnimationFrame(() => {
+              resumePlayback();
+            });
           }
           // Reset manual seek flag
           playStateSetFromManualSeekRef.current = false;
