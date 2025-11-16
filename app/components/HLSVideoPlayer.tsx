@@ -225,7 +225,7 @@ export default function HLSVideoPlayer({
 
   // Refs for batching timeupdate state updates with requestAnimationFrame
   const rafIdRef = useRef<number | null>(null);
-  const pendingTimeUpdateRef = useRef<{currentTime: number; duration: number; buffered: number} | null>(null);
+  const pendingTimeUpdateRef = useRef<{ currentTime: number; duration: number; buffered: number } | null>(null);
 
   // Helper function to save position before error recovery (eliminates duplication)
   const savePositionForRecovery = useCallback((video: HTMLVideoElement | null) => {
@@ -413,7 +413,7 @@ export default function HLSVideoPlayer({
       const handleSeeking = () => {
         const video = videoRef.current;
         if (video) {
-          // Save play state before seeking to resume after seek completes
+          // Save play state BEFORE pausing to ensure correct state is captured
           // Only update if not already set from manual seek (to preserve state from progress bar)
           if (!playStateSetFromManualSeekRef.current) {
             wasPlayingBeforeSeekRef.current = !video.paused;
@@ -422,13 +422,13 @@ export default function HLSVideoPlayer({
           if (pendingPlayPromiseRef.current) {
             pendingPlayPromiseRef.current = null;
           }
-          // Only pause if video is playing (avoid interrupting pending play)
+          // Pause video during seeking (will resume in handleSeeked if was playing)
           if (!video.paused) {
             video.pause();
           }
           isSeekingRef.current = true;
           seekTargetRef.current = video.currentTime;
-          debugLog('[HLS] Seeking started, target:', seekTargetRef.current);
+          debugLog('[HLS] Seeking started, target:', seekTargetRef.current, 'wasPlaying:', wasPlayingBeforeSeekRef.current);
         }
       };
 
@@ -437,30 +437,38 @@ export default function HLSVideoPlayer({
         if (video && hls) {
           isSeekingRef.current = false;
           const newPosition = video.currentTime;
-          debugLog('[HLS] Seeking completed, new position:', newPosition);
+          const wasPlaying = wasPlayingBeforeSeekRef.current;
+          debugLog('[HLS] Seeking completed, new position:', newPosition, 'wasPlaying:', wasPlaying);
           // Track seek completion time to prevent duplicate preload
           lastSeekTimeRef.current = Date.now();
           // Trigger immediate prefetch around seek position
           throttledStartLoad();
           // Resume playback if video was playing before seek
-          if (wasPlayingBeforeSeekRef.current) {
+          if (wasPlaying) {
             // Clear any pending play promise
             pendingPlayPromiseRef.current = null;
-            const playPromise = video.play();
-            if (playPromise !== undefined) {
-              pendingPlayPromiseRef.current = playPromise;
-              playPromise
-                .then(() => {
-                  pendingPlayPromiseRef.current = null;
-                })
-                .catch((error) => {
-                  pendingPlayPromiseRef.current = null;
-                  // Ignore "interrupted" errors as they're expected during seeking
-                  if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
-                    debugWarn('[HLS] Failed to resume playback after seek:', error);
-                  }
-                });
-            }
+            // Use setTimeout to ensure video is ready after seek completes
+            setTimeout(() => {
+              const video = videoRef.current;
+              if (video && video.paused) {
+                const playPromise = video.play();
+                if (playPromise !== undefined) {
+                  pendingPlayPromiseRef.current = playPromise;
+                  playPromise
+                    .then(() => {
+                      pendingPlayPromiseRef.current = null;
+                      debugLog('[HLS] Playback resumed after seek');
+                    })
+                    .catch((error) => {
+                      pendingPlayPromiseRef.current = null;
+                      // Ignore "interrupted" errors as they're expected during seeking
+                      if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
+                        debugWarn('[HLS] Failed to resume playback after seek:', error);
+                      }
+                    });
+                }
+              }
+            }, 0);
           }
           // Reset manual seek flag
           playStateSetFromManualSeekRef.current = false;
@@ -658,7 +666,7 @@ export default function HLSVideoPlayer({
         percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
       } else {
         // Mouse event: use offsetX (relative to element, more efficient)
-        const offsetX = e.nativeEvent.offsetX ?? (e.clientX - progressBar.getBoundingClientRect().left);
+        const offsetX = e.nativeEvent.offsetX ?? e.clientX - progressBar.getBoundingClientRect().left;
         percent = Math.max(0, Math.min(1, offsetX / progressBar.offsetWidth));
       }
       const newTime = percent * duration;
@@ -692,7 +700,7 @@ export default function HLSVideoPlayer({
         percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
       } else {
         // Mouse event: use offsetX (relative to element, more efficient)
-        const offsetX = e.nativeEvent.offsetX ?? (e.clientX - volumeBar.getBoundingClientRect().left);
+        const offsetX = e.nativeEvent.offsetX ?? e.clientX - volumeBar.getBoundingClientRect().left;
         percent = Math.max(0, Math.min(1, offsetX / volumeBar.offsetWidth));
       }
 
