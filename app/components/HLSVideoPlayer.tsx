@@ -414,10 +414,9 @@ export default function HLSVideoPlayer({
         const video = videoRef.current;
         if (video) {
           // Save play state BEFORE pausing to ensure correct state is captured
-          // Only update if not already set from manual seek (to preserve state from progress bar)
-          if (!playStateSetFromManualSeekRef.current) {
-            wasPlayingBeforeSeekRef.current = !video.paused;
-          }
+          // Always update to ensure we have the correct state (manual seek may have set it, but double-check)
+          // This ensures wasPlayingBeforeSeekRef is always accurate
+          wasPlayingBeforeSeekRef.current = !video.paused || wasPlayingBeforeSeekRef.current;
           // Cancel any pending play promise
           if (pendingPlayPromiseRef.current) {
             pendingPlayPromiseRef.current = null;
@@ -432,7 +431,9 @@ export default function HLSVideoPlayer({
             '[HLS] Seeking started, target:',
             seekTargetRef.current,
             'wasPlaying:',
-            wasPlayingBeforeSeekRef.current
+            wasPlayingBeforeSeekRef.current,
+            'video.paused:',
+            video.paused
           );
         }
       };
@@ -442,8 +443,16 @@ export default function HLSVideoPlayer({
         if (video && hls) {
           isSeekingRef.current = false;
           const newPosition = video.currentTime;
+          // Capture wasPlaying value before any other operations
           const wasPlaying = wasPlayingBeforeSeekRef.current;
-          debugLog('[HLS] Seeking completed, new position:', newPosition, 'wasPlaying:', wasPlaying);
+          debugLog(
+            '[HLS] Seeking completed, new position:',
+            newPosition,
+            'wasPlaying:',
+            wasPlaying,
+            'video.paused:',
+            video.paused
+          );
           // Track seek completion time to prevent duplicate preload
           lastSeekTimeRef.current = Date.now();
           // Trigger immediate prefetch around seek position
