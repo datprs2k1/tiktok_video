@@ -21,6 +21,18 @@ const debugWarn = (...args: any[]) => {
   }
 };
 
+// Format time helper
+const formatTime = (seconds: number): string => {
+  if (isNaN(seconds)) return '0:00';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  }
+  return `${m}:${s.toString().padStart(2, '0')}`;
+};
+
 interface HLSVideoPlayerProps {
   hlsUrl?: string;
   className?: string;
@@ -143,21 +155,159 @@ export default function HLSVideoPlayer({
 
   // Seeking detection refs
   const isSeekingRef = useRef<boolean>(false);
-  const previousTimeRef = useRef<number>(0);
   const seekTargetRef = useRef<number>(0);
 
   // Debouncing ref for hls.startLoad() calls
   const lastLoadTimeRef = useRef<number>(0);
   // Timeout tracking to prevent multiple setTimeout callbacks from accumulating
   const pendingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Throttled wrapper for hls.startLoad() - moved to component level
+  const throttledStartLoad = useCallback(() => {
+    const hls = hlsRef.current;
+    if (!hls) return;
+    // CRITICAL: Check if HLS is already loading to prevent duplicate requests
+    if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
+      return; // Already loading, skip to prevent duplicate segment requests
+    }
+
+    const now = Date.now();
+    const timeSinceLastLoad = now - lastLoadTimeRef.current;
+    const minInterval = 500; // Minimum 500ms between calls
+
+    if (timeSinceLastLoad >= minInterval) {
+      lastLoadTimeRef.current = now;
+      // Cancel any pending timeout before making immediate call
+      if (pendingTimeoutRef.current) {
+        clearTimeout(pendingTimeoutRef.current);
+        pendingTimeoutRef.current = null;
+      }
+      if (hls) {
+        hls.startLoad();
+      }
+    } else {
+      // Schedule delayed call if within throttle window
+      // Cancel existing timeout to prevent accumulation
+      if (pendingTimeoutRef.current) {
+        clearTimeout(pendingTimeoutRef.current);
+        pendingTimeoutRef.current = null;
+      }
+      const remainingTime = minInterval - timeSinceLastLoad;
+      pendingTimeoutRef.current = setTimeout(() => {
+        pendingTimeoutRef.current = null; // Clear ref when timeout fires
+        // Check again if still loading before executing
+        const hls = hlsRef.current;
+        if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
+          return; // Already loading, skip
+        }
+        const now = Date.now();
+        if (now - lastLoadTimeRef.current >= minInterval) {
+          lastLoadTimeRef.current = now;
+          if (hls) {
+            hls.startLoad();
+          }
+        }
+      }, remainingTime);
+    }
+  }, []);
   // Track seek completion time to prevent duplicate preload after seek
   const lastSeekTimeRef = useRef<number>(0);
   // Track play state before seeking to resume after seek completes
   const wasPlayingBeforeSeekRef = useRef<boolean>(false);
+  // Track if play state was set from manual seek (progress bar)
+  const playStateSetFromManualSeekRef = useRef<boolean>(false);
+  // Track pending play promise to avoid interruptions
+  const pendingPlayPromiseRef = useRef<Promise<void> | null>(null);
 
   // Position preservation refs for error recovery
   const savedPositionRef = useRef<number>(0);
   const isRecoveringRef = useRef<boolean>(false);
+
+  // Throttled buffer checking - moved to component level for accessibility
+  const lastCheckTimeRef = useRef<number>(0);
+  const CHECK_INTERVAL = 2000; // Check every 2 seconds (throttled)
+
+  // checkAndPreload function - moved to component level to be accessible from main handlers
+  const checkAndPreload = useCallback(() => {
+    const video = videoRef.current;
+    const hls = hlsRef.current;
+    if (!video || !hls) return;
+
+    const currentTime = video.currentTime;
+
+    const buffered = video.buffered;
+    let bufferedEnd = 0;
+
+    if (buffered.length > 0) {
+      bufferedEnd = buffered.end(buffered.length - 1);
+    }
+
+    const bufferAhead = bufferedEnd - currentTime;
+    const bufferHealth = bufferAhead; // Current buffer health in seconds
+
+    // Seeking detection: track seeking state for information/logging
+    // Note: Seeking-triggered loads are handled by handleSeeked() to prevent duplicates
+    if (isSeekingRef.current) {
+      const seekTarget = seekTargetRef.current;
+      // Check if buffer around seek position is sufficient (for information only)
+      let hasBufferAroundSeek = false;
+      for (let i = 0; i < buffered.length; i++) {
+        const start = buffered.start(i);
+        const end = buffered.end(i);
+        // Check if seek target is within buffered range or close (within 5s)
+        if (seekTarget >= start - 5 && seekTarget <= end + 5) {
+          hasBufferAroundSeek = true;
+          break; // Early exit when found
+        }
+      }
+      // Continue to normal prefetch check below (handleSeeked() handles seeking-triggered loads)
+    }
+
+    // Skip normal prefetch during seeking to prevent duplicates with handleSeeked()
+    if (isSeekingRef.current) {
+      return; // handleSeeked() is the sole handler for seeking-triggered loads
+    }
+
+    // Skip normal prefetch if seek completed recently (within last 1.5 seconds)
+    // This prevents checkAndPreload() from triggering load right after seek,
+    // giving handleSeeked() exclusive control during immediate post-seek period
+    const timeSinceSeek = Date.now() - lastSeekTimeRef.current;
+    if (timeSinceSeek < 1500) {
+      return; // Skip normal prefetch if seek completed within last 1.5 seconds
+    }
+
+    // Normal prefetch logic (only runs when not seeking)
+    // Segment duration: 10 seconds per segment (fixed)
+    const SEGMENT_DURATION = 10;
+    const bufferedSegments = Math.floor(bufferAhead / SEGMENT_DURATION);
+    const minSegments = 5; // Minimum 5 segments required (YouTube-like: 4-6 segments)
+
+    // Calculate adaptive prefetch distance based on bandwidth and buffer health
+    const prefetchDistance = calculateAdaptivePrefetchDistance(networkBandwidth, bufferHealth);
+
+    // Check if HLS is already loading to prevent duplicate segment requests
+    // This provides an additional layer of protection beyond throttledStartLoad()
+    if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
+      return; // Already loading, skip to prevent duplicate requests
+    }
+
+    // Preload if buffer is less than 5 segments OR less than adaptive distance ahead
+    // This ensures minimum 5 segments while keeping adaptive optimization
+    // YouTube-like: preload even when paused
+    if (bufferedSegments < minSegments || bufferAhead < prefetchDistance) {
+      // Trigger HLS to load more segments
+      throttledStartLoad();
+    }
+  }, [networkBandwidth, throttledStartLoad]);
+
+  // Throttled wrapper for checkAndPreload to prevent excessive calls
+  const throttledCheckAndPreload = useCallback(() => {
+    const now = Date.now();
+    if (now - lastCheckTimeRef.current >= CHECK_INTERVAL) {
+      lastCheckTimeRef.current = now;
+      checkAndPreload();
+    }
+  }, [checkAndPreload]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -219,54 +369,6 @@ export default function HLSVideoPlayer({
       hls.loadSource(hlsUrl);
       hls.attachMedia(video);
 
-      // Throttled wrapper for hls.startLoad() to prevent redundant network requests
-      // Defined at useEffect level so it's accessible to all handlers
-      const throttledStartLoad = () => {
-        // CRITICAL: Check if HLS is already loading to prevent duplicate requests
-        // HLS.js has a 'loading' property that TypeScript types may not include
-        if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
-          return; // Already loading, skip to prevent duplicate segment requests
-        }
-
-        const now = Date.now();
-        const timeSinceLastLoad = now - lastLoadTimeRef.current;
-        const minInterval = 500; // Minimum 500ms between calls
-
-        if (timeSinceLastLoad >= minInterval) {
-          lastLoadTimeRef.current = now;
-          // Cancel any pending timeout before making immediate call
-          if (pendingTimeoutRef.current) {
-            clearTimeout(pendingTimeoutRef.current);
-            pendingTimeoutRef.current = null;
-          }
-          if (hls) {
-            hls.startLoad();
-          }
-        } else {
-          // Schedule delayed call if within throttle window
-          // Cancel existing timeout to prevent accumulation
-          if (pendingTimeoutRef.current) {
-            clearTimeout(pendingTimeoutRef.current);
-            pendingTimeoutRef.current = null;
-          }
-          const remainingTime = minInterval - timeSinceLastLoad;
-          pendingTimeoutRef.current = setTimeout(() => {
-            pendingTimeoutRef.current = null; // Clear ref when timeout fires
-            // Check again if still loading before executing
-            if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
-              return; // Already loading, skip
-            }
-            const now = Date.now();
-            if (now - lastLoadTimeRef.current >= minInterval) {
-              lastLoadTimeRef.current = now;
-              if (hls) {
-                hls.startLoad();
-              }
-            }
-          }, remainingTime);
-        }
-      };
-
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         debugLog('[HLS] Manifest parsed, video ready to play');
         debugLog('[HLS] Levels:', hls.levels);
@@ -306,130 +408,10 @@ export default function HLSVideoPlayer({
         }
 
         // Progressive loading: Preload next segments based on playback position
+        // Note: Event listeners are now handled in main video event handlers to avoid duplicates
         const setupProgressiveLoading = () => {
-          const checkAndPreload = () => {
-            if (!video || !hls) return;
-
-            const currentTime = video.currentTime;
-
-            // Integrated seeking detection via time jumps (consolidated from handleTimeUpdate)
-            // Skip seeking detection during recovery to avoid false positives from buffer reset
-            if (!isRecoveringRef.current) {
-              const timeDiff = Math.abs(currentTime - previousTimeRef.current);
-              if (timeDiff > 2 && !isSeekingRef.current) {
-                // Time jump detected - likely a seek
-                isSeekingRef.current = true;
-                seekTargetRef.current = currentTime;
-                debugLog('[HLS] Seek detected via time jump, target:', seekTargetRef.current);
-              }
-            }
-            previousTimeRef.current = currentTime;
-
-            const buffered = video.buffered;
-            let bufferedEnd = 0;
-
-            if (buffered.length > 0) {
-              bufferedEnd = buffered.end(buffered.length - 1);
-            }
-
-            const bufferAhead = bufferedEnd - currentTime;
-            const bufferHealth = bufferAhead; // Current buffer health in seconds
-
-            // Seeking detection: track seeking state for information/logging
-            // Note: Seeking-triggered loads are handled by handleSeeked() to prevent duplicates
-            if (isSeekingRef.current) {
-              const seekTarget = seekTargetRef.current;
-              // Check if buffer around seek position is sufficient (for information only)
-              let hasBufferAroundSeek = false;
-              for (let i = 0; i < buffered.length; i++) {
-                const start = buffered.start(i);
-                const end = buffered.end(i);
-                // Check if seek target is within buffered range or close (within 5s)
-                if (seekTarget >= start - 5 && seekTarget <= end + 5) {
-                  hasBufferAroundSeek = true;
-                  break; // Early exit when found
-                }
-              }
-              // Continue to normal prefetch check below (handleSeeked() handles seeking-triggered loads)
-            }
-
-            // Skip normal prefetch during seeking to prevent duplicates with handleSeeked()
-            if (isSeekingRef.current) {
-              return; // handleSeeked() is the sole handler for seeking-triggered loads
-            }
-
-            // Skip normal prefetch if seek completed recently (within last 1 second)
-            // This prevents checkAndPreload() from triggering load right after seek,
-            // giving handleSeeked() exclusive control during immediate post-seek period
-            const timeSinceSeek = Date.now() - lastSeekTimeRef.current;
-            if (timeSinceSeek < 1000) {
-              return; // Skip normal prefetch if seek completed within last 1 second
-            }
-
-            // Normal prefetch logic (only runs when not seeking)
-            // Segment duration: 10 seconds per segment (fixed)
-            const SEGMENT_DURATION = 10;
-            const bufferedSegments = Math.floor(bufferAhead / SEGMENT_DURATION);
-            const minSegments = 5; // Minimum 5 segments required (YouTube-like: 4-6 segments)
-
-            // Calculate adaptive prefetch distance based on bandwidth and buffer health
-            const prefetchDistance = calculateAdaptivePrefetchDistance(networkBandwidth, bufferHealth);
-
-            // Check if HLS is already loading to prevent duplicate segment requests
-            // This provides an additional layer of protection beyond throttledStartLoad()
-            if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
-              return; // Already loading, skip to prevent duplicate requests
-            }
-
-            // Preload if buffer is less than 5 segments OR less than adaptive distance ahead
-            // This ensures minimum 5 segments while keeping adaptive optimization
-            // YouTube-like: preload even when paused
-            if (bufferedSegments < minSegments || bufferAhead < prefetchDistance) {
-              // Trigger HLS to load more segments
-              throttledStartLoad();
-            }
-          };
-
-          // Event-driven buffer checking instead of polling for better performance
-          // Use timeupdate event (fires every ~250ms) combined with throttling
-          let lastCheckTime = 0;
-          const CHECK_INTERVAL = 2000; // Check every 2 seconds (throttled)
-
-          const handleTimeUpdate = () => {
-            const now = Date.now();
-            if (now - lastCheckTime >= CHECK_INTERVAL) {
-              lastCheckTime = now;
-              checkAndPreload();
-            }
-          };
-
-          // Also check on play/pause events for immediate response
-          const handlePlay = () => {
-            checkAndPreload();
-            video.addEventListener('timeupdate', handleTimeUpdate);
-          };
-
-          const handlePause = () => {
-            video.removeEventListener('timeupdate', handleTimeUpdate);
-            // Still check once when paused to maintain buffer
-            checkAndPreload();
-          };
-
           // Start buffering immediately
           checkAndPreload();
-
-          // Add event listeners
-          video.addEventListener('play', handlePlay);
-          video.addEventListener('pause', handlePause);
-          if (!video.paused) {
-            video.addEventListener('timeupdate', handleTimeUpdate);
-          }
-
-          return () => {
-            video.removeEventListener('timeupdate', handleTimeUpdate);
-            video.removeEventListener('play', handlePlay);
-            video.removeEventListener('pause', handlePause);
-          };
         };
 
         // Setup progressive loading after a short delay to ensure video is ready
@@ -451,9 +433,18 @@ export default function HLSVideoPlayer({
         const video = videoRef.current;
         if (video) {
           // Save play state before seeking to resume after seek completes
-          wasPlayingBeforeSeekRef.current = !video.paused;
-          // Pause video to ensure both video and audio tracks stop during seek
-          video.pause();
+          // Only update if not already set from manual seek (to preserve state from progress bar)
+          if (!playStateSetFromManualSeekRef.current) {
+            wasPlayingBeforeSeekRef.current = !video.paused;
+          }
+          // Cancel any pending play promise
+          if (pendingPlayPromiseRef.current) {
+            pendingPlayPromiseRef.current = null;
+          }
+          // Only pause if video is playing (avoid interrupting pending play)
+          if (!video.paused) {
+            video.pause();
+          }
           isSeekingRef.current = true;
           seekTargetRef.current = video.currentTime;
           debugLog('[HLS] Seeking started, target:', seekTargetRef.current);
@@ -472,10 +463,26 @@ export default function HLSVideoPlayer({
           throttledStartLoad();
           // Resume playback if video was playing before seek
           if (wasPlayingBeforeSeekRef.current) {
-            video.play().catch((error) => {
-              debugWarn('[HLS] Failed to resume playback after seek:', error);
-            });
+            // Clear any pending play promise
+            pendingPlayPromiseRef.current = null;
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+              pendingPlayPromiseRef.current = playPromise;
+              playPromise
+                .then(() => {
+                  pendingPlayPromiseRef.current = null;
+                })
+                .catch((error) => {
+                  pendingPlayPromiseRef.current = null;
+                  // Ignore "interrupted" errors as they're expected during seeking
+                  if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
+                    debugWarn('[HLS] Failed to resume playback after seek:', error);
+                  }
+                });
+            }
           }
+          // Reset manual seek flag
+          playStateSetFromManualSeekRef.current = false;
         }
       };
 
@@ -502,88 +509,475 @@ export default function HLSVideoPlayer({
     };
   }, [hlsUrl, networkBandwidth]);
 
+  // Player state
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isVolumeDragging, setIsVolumeDragging] = useState(false);
+  const [buffered, setBuffered] = useState(0);
+  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const progressBarRef = useRef<HTMLDivElement>(null);
+  const volumeBarRef = useRef<HTMLDivElement>(null);
+
+  // Hide controls after inactivity
+  const resetControlsTimeout = useCallback(() => {
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+    }
+    setShowControls(true);
+    if (isPlaying) {
+      controlsTimeoutRef.current = setTimeout(() => {
+        setShowControls(false);
+      }, 3000);
+    }
+  }, [isPlaying]);
+
+  // Video event handlers
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handlePlay = () => {
+      setIsPlaying(true);
+      resetControlsTimeout();
+      // Trigger buffer check on play
+      checkAndPreload();
+    };
+
+    const handlePause = () => {
+      setIsPlaying(false);
+      setShowControls(true);
+      // Trigger buffer check on pause to maintain buffer
+      checkAndPreload();
+    };
+
+    const handleTimeUpdate = () => {
+      setCurrentTime(video.currentTime);
+      setDuration(video.duration || 0);
+
+      // Calculate buffered progress
+      if (video.buffered.length > 0) {
+        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+        setBuffered((bufferedEnd / video.duration) * 100);
+      }
+
+      // Trigger throttled buffer check
+      throttledCheckAndPreload();
+    };
+
+    const handleLoadedMetadata = () => {
+      setDuration(video.duration || 0);
+      setVolume(video.volume);
+      setIsMuted(video.muted);
+    };
+
+    const handleVolumeChange = () => {
+      setVolume(video.volume);
+      setIsMuted(video.muted);
+    };
+
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
+    video.addEventListener('volumechange', handleVolumeChange);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+
+    return () => {
+      video.removeEventListener('play', handlePlay);
+      video.removeEventListener('pause', handlePause);
+      video.removeEventListener('timeupdate', handleTimeUpdate);
+      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      video.removeEventListener('volumechange', handleVolumeChange);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, [resetControlsTimeout, checkAndPreload, throttledCheckAndPreload]);
+
+  // Play/Pause toggle
+  const togglePlayPause = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (video.paused) {
+      // Clear any pending play promise
+      pendingPlayPromiseRef.current = null;
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        pendingPlayPromiseRef.current = playPromise;
+        playPromise
+          .then(() => {
+            pendingPlayPromiseRef.current = null;
+          })
+          .catch((error) => {
+            pendingPlayPromiseRef.current = null;
+            // Ignore "interrupted" errors - they're expected if user clicks pause quickly
+            if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
+              debugWarn('[Video] Play failed:', error);
+            }
+          });
+      }
+    } else {
+      // Cancel any pending play promise before pausing
+      if (pendingPlayPromiseRef.current) {
+        pendingPlayPromiseRef.current = null;
+      }
+      video.pause();
+    }
+    resetControlsTimeout();
+  }, [resetControlsTimeout]);
+
+  // Seek handler
+  const handleSeek = useCallback(
+    (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+      const video = videoRef.current;
+      const progressBar = progressBarRef.current;
+      if (!video || !progressBar) return;
+
+      const rect = progressBar.getBoundingClientRect();
+      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+      const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const newTime = percent * duration;
+
+      // Save play state before seeking (important for manual seek via progress bar)
+      wasPlayingBeforeSeekRef.current = !video.paused;
+      playStateSetFromManualSeekRef.current = true; // Mark that we set this from manual seek
+
+      // Set new time - this will trigger seeking/seeked events
+      video.currentTime = newTime;
+      setCurrentTime(newTime);
+      resetControlsTimeout();
+    },
+    [duration, resetControlsTimeout]
+  );
+
+  // Volume handler
+  const handleVolumeChange = useCallback(
+    (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+      const video = videoRef.current;
+      const volumeBar = volumeBarRef.current;
+      if (!video || !volumeBar) return;
+
+      const rect = volumeBar.getBoundingClientRect();
+      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+      const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+
+      video.volume = percent;
+      setVolume(percent);
+      setIsMuted(percent === 0);
+      resetControlsTimeout();
+    },
+    [resetControlsTimeout]
+  );
+
+  // Toggle mute
+  const toggleMute = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    setIsMuted(video.muted);
+    resetControlsTimeout();
+  }, [resetControlsTimeout]);
+
+  // Toggle fullscreen
+  const toggleFullscreen = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    if (!document.fullscreenElement) {
+      container.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen();
+    }
+    resetControlsTimeout();
+  }, [resetControlsTimeout]);
+
+  // Double tap to seek (mobile)
+  const lastTapRef = useRef(0);
+  const handleDoubleTap = useCallback(
+    (e: React.TouchEvent) => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      const now = Date.now();
+      const DOUBLE_TAP_DELAY = 300;
+
+      if (now - lastTapRef.current < DOUBLE_TAP_DELAY) {
+        const rect = video.getBoundingClientRect();
+        const touch = e.changedTouches[0];
+        const x = touch.clientX - rect.left;
+        const width = rect.width;
+
+        if (x < width / 2) {
+          // Left side - seek backward 10s
+          video.currentTime = Math.max(0, video.currentTime - 10);
+        } else {
+          // Right side - seek forward 10s
+          video.currentTime = Math.min(duration, video.currentTime + 10);
+        }
+        lastTapRef.current = 0;
+      } else {
+        lastTapRef.current = now;
+      }
+    },
+    [duration]
+  );
+
   return (
-    <div className="absolute inset-0">
-      {/* Glassmorphism Container - Mobile optimized */}
-      <div
-        className="
-        relative w-full h-full
-        backdrop-blur-md
-        bg-white/5 dark:bg-black/20
-        border border-white/10 dark:border-white/20
-        rounded-xl md:rounded-2xl
-        shadow-lg md:shadow-2xl
-        overflow-hidden
-        transition-all duration-300
-      "
-      >
-        {/* Video Element */}
-        <video ref={videoRef} className={className} controls playsInline />
+    <div
+      ref={containerRef}
+      className="relative w-full h-full group"
+      onMouseMove={resetControlsTimeout}
+      onMouseLeave={() => isPlaying && setShowControls(false)}
+      onTouchStart={resetControlsTimeout}
+    >
+      {/* Liquid Glass Background Effect */}
+      <div className="absolute inset-0 overflow-hidden rounded-2xl">
+        <div className="absolute inset-0 liquid-glass-bg" />
+        <div className="absolute inset-0 liquid-glass-overlay" />
+      </div>
 
-        {/* Loading indicator */}
-        {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
-            <div className="text-white">Loading video...</div>
+      {/* Video Element */}
+      <video
+        ref={videoRef}
+        className={className}
+        playsInline
+        onDoubleClick={toggleFullscreen}
+        onTouchEnd={handleDoubleTap}
+      />
+
+      {/* Loading indicator */}
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center z-30">
+          <div className="liquid-glass-card p-8 rounded-2xl">
+            <div className="loading-spinner" />
+            <p className="mt-4 text-white/90 text-sm font-medium">Đang tải video...</p>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Quality selector */}
-        {availableLevels.length > 0 && (
-          <div className="absolute top-4 right-4 z-20">
+      {/* Custom Controls Overlay */}
+      <div
+        className={`absolute inset-0 z-20 transition-opacity duration-300 ${
+          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+      >
+        {/* Center Play/Pause Button */}
+        <div className="absolute inset-0 flex items-center justify-center" onClick={togglePlayPause}>
+          <button
+            className={`
+              liquid-glass-button
+              w-20 h-20 md:w-24 md:h-24
+              rounded-full
+              flex items-center justify-center
+              transition-all duration-300
+              ${showControls ? 'scale-100 opacity-100' : 'scale-75 opacity-0'}
+              ${isPlaying ? 'hidden' : 'block'}
+            `}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            <svg className="w-10 h-10 md:w-12 md:h-12 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Bottom Controls Bar */}
+        <div className="absolute bottom-0 left-0 right-0 liquid-glass-controls p-3 md:p-4">
+          {/* Progress Bar */}
+          <div
+            ref={progressBarRef}
+            className="relative h-1.5 md:h-2 mb-3 md:mb-4 cursor-pointer group/progress"
+            onClick={handleSeek}
+            onTouchStart={(e) => {
+              setIsDragging(true);
+              handleSeek(e);
+            }}
+            onTouchMove={(e) => {
+              if (isDragging) handleSeek(e);
+            }}
+            onTouchEnd={() => setIsDragging(false)}
+            onMouseDown={(e) => {
+              setIsDragging(true);
+              handleSeek(e);
+            }}
+            onMouseMove={(e) => {
+              if (isDragging) handleSeek(e);
+            }}
+            onMouseUp={() => setIsDragging(false)}
+            onMouseLeave={() => setIsDragging(false)}
+          >
+            {/* Buffered progress */}
+            <div className="absolute inset-0 bg-white/20 rounded-full" style={{ width: `${buffered}%` }} />
+            {/* Current progress */}
+            <div
+              className="absolute inset-0 bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-500 rounded-full transition-all duration-150"
+              style={{ width: `${(currentTime / duration) * 100}%` }}
+            />
+            {/* Progress handle */}
+            <div
+              className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg opacity-0 group-hover/progress:opacity-100 transition-opacity"
+              style={{ left: `${(currentTime / duration) * 100}%`, transform: 'translate(-50%, -50%)' }}
+            />
+          </div>
+
+          {/* Control Buttons */}
+          <div className="flex items-center gap-2 md:gap-4">
+            {/* Play/Pause */}
             <button
-              onClick={() => setShowQualitySelector(!showQualitySelector)}
-              className="px-3 py-2 bg-black/70 text-white rounded-lg text-sm hover:bg-black/90 transition-colors"
+              onClick={togglePlayPause}
+              className="liquid-glass-button-icon"
+              aria-label={isPlaying ? 'Pause' : 'Play'}
             >
-              Quality {currentLevel === -1 ? 'Auto' : availableLevels[currentLevel]?.height + 'p'}
+              {isPlaying ? (
+                <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              )}
             </button>
-            {showQualitySelector && (
-              <div className="absolute top-full right-0 mt-2 bg-black/90 rounded-lg overflow-hidden min-w-[120px]">
+
+            {/* Volume Control */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleMute}
+                className="liquid-glass-button-icon"
+                aria-label={isMuted ? 'Unmute' : 'Mute'}
+              >
+                {isMuted || volume === 0 ? (
+                  <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" />
+                  </svg>
+                ) : volume < 0.5 ? (
+                  <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M18.83 16h-2.75l-1-1H12v-6h3.08l1-1H18.83v8zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+                  </svg>
+                )}
+              </button>
+
+              {/* Volume Slider */}
+              <div
+                ref={volumeBarRef}
+                className="hidden md:flex items-center w-24 h-1.5 cursor-pointer group/volume"
+                onClick={handleVolumeChange}
+                onMouseDown={(e) => {
+                  setIsVolumeDragging(true);
+                  handleVolumeChange(e);
+                }}
+                onMouseMove={(e) => {
+                  if (isVolumeDragging) handleVolumeChange(e);
+                }}
+                onMouseUp={() => setIsVolumeDragging(false)}
+                onMouseLeave={() => setIsVolumeDragging(false)}
+              >
+                <div className="relative w-full h-full bg-white/20 rounded-full">
+                  <div
+                    className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full transition-all"
+                    style={{ width: `${(isMuted ? 0 : volume) * 100}%` }}
+                  />
+                  <div
+                    className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-md opacity-0 group-hover/volume:opacity-100 transition-opacity"
+                    style={{ left: `${(isMuted ? 0 : volume) * 100}%`, transform: 'translate(-50%, -50%)' }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Time Display */}
+            <div className="flex-1 text-white/90 text-xs md:text-sm font-medium tabular-nums">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </div>
+
+            {/* Quality Selector */}
+            {availableLevels.length > 0 && (
+              <div className="relative">
                 <button
-                  onClick={() => {
-                    if (hlsRef.current) {
-                      hlsRef.current.currentLevel = -1;
-                      setCurrentLevel(-1);
-                      setShowQualitySelector(false);
-                    }
-                  }}
-                  className={`w-full px-4 py-2 text-left text-sm text-white hover:bg-white/10 ${
-                    currentLevel === -1 ? 'bg-white/20' : ''
-                  }`}
+                  onClick={() => setShowQualitySelector(!showQualitySelector)}
+                  className="liquid-glass-button-icon"
+                  aria-label="Quality settings"
                 >
-                  Auto
+                  <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+                  </svg>
                 </button>
-                {availableLevels.map((level, index) => (
-                  <button
-                    key={index}
-                    onClick={() => {
-                      if (hlsRef.current) {
-                        hlsRef.current.currentLevel = index;
-                        setCurrentLevel(index);
-                        setShowQualitySelector(false);
-                      }
-                    }}
-                    className={`w-full px-4 py-2 text-left text-sm text-white hover:bg-white/10 ${
-                      currentLevel === index ? 'bg-white/20' : ''
-                    }`}
-                  >
-                    {level.height}p
-                  </button>
-                ))}
+                {showQualitySelector && (
+                  <div className="absolute bottom-full right-0 mb-2 liquid-glass-card rounded-xl overflow-hidden min-w-[140px] shadow-2xl">
+                    <button
+                      onClick={() => {
+                        if (hlsRef.current) {
+                          hlsRef.current.currentLevel = -1;
+                          setCurrentLevel(-1);
+                          setShowQualitySelector(false);
+                        }
+                      }}
+                      className={`w-full px-4 py-3 text-left text-sm text-white hover:bg-white/10 transition-colors ${
+                        currentLevel === -1 ? 'bg-white/20' : ''
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span>Auto</span>
+                        {currentLevel === -1 && <span className="text-cyan-400">✓</span>}
+                      </span>
+                    </button>
+                    {availableLevels.map((level, index) => (
+                      <button
+                        key={index}
+                        onClick={() => {
+                          if (hlsRef.current) {
+                            hlsRef.current.currentLevel = index;
+                            setCurrentLevel(index);
+                            setShowQualitySelector(false);
+                          }
+                        }}
+                        className={`w-full px-4 py-3 text-left text-sm text-white hover:bg-white/10 transition-colors ${
+                          currentLevel === index ? 'bg-white/20' : ''
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span>{level.height}p</span>
+                          {currentLevel === index && <span className="text-cyan-400">✓</span>}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
-          </div>
-        )}
 
-        {/* Optional: Glass overlay for enhanced effect on desktop */}
-        <div
-          className="
-          hidden md:block
-          absolute inset-0
-          pointer-events-none
-          bg-gradient-to-br from-white/5 to-transparent
-          rounded-xl md:rounded-2xl
-        "
-        />
+            {/* Fullscreen */}
+            <button
+              onClick={toggleFullscreen}
+              className="liquid-glass-button-icon"
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            >
+              {isFullscreen ? (
+                <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
