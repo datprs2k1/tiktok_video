@@ -223,6 +223,10 @@ export default function HLSVideoPlayer({
   const savedPositionRef = useRef<number>(0);
   const isRecoveringRef = useRef<boolean>(false);
 
+  // Refs for batching timeupdate state updates with requestAnimationFrame
+  const rafIdRef = useRef<number | null>(null);
+  const pendingTimeUpdateRef = useRef<{currentTime: number; duration: number; buffered: number} | null>(null);
+
   // Helper function to save position before error recovery (eliminates duplication)
   const savePositionForRecovery = useCallback((video: HTMLVideoElement | null) => {
     if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
@@ -253,24 +257,6 @@ export default function HLSVideoPlayer({
 
     const bufferAhead = bufferedEnd - currentTime;
     const bufferHealth = bufferAhead; // Current buffer health in seconds
-
-    // Seeking detection: track seeking state for information/logging
-    // Note: Seeking-triggered loads are handled by handleSeeked() to prevent duplicates
-    if (isSeekingRef.current) {
-      const seekTarget = seekTargetRef.current;
-      // Check if buffer around seek position is sufficient (for information only)
-      let hasBufferAroundSeek = false;
-      for (let i = 0; i < buffered.length; i++) {
-        const start = buffered.start(i);
-        const end = buffered.end(i);
-        // Check if seek target is within buffered range or close (within 5s)
-        if (seekTarget >= start - 5 && seekTarget <= end + 5) {
-          hasBufferAroundSeek = true;
-          break; // Early exit when found
-        }
-      }
-      // Continue to normal prefetch check below (handleSeeked() handles seeking-triggered loads)
-    }
 
     // Skip normal prefetch during seeking to prevent duplicates with handleSeeked()
     if (isSeekingRef.current) {
@@ -553,14 +539,33 @@ export default function HLSVideoPlayer({
     };
 
     const handleTimeUpdate = () => {
-      setCurrentTime(video.currentTime);
-      setDuration(video.duration || 0);
-
-      // Calculate buffered progress
+      // Store pending update data instead of calling setState immediately
+      const currentTime = video.currentTime;
+      const duration = video.duration || 0;
+      let buffered = 0;
       if (video.buffered.length > 0) {
         const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-        setBuffered((bufferedEnd / video.duration) * 100);
+        buffered = (bufferedEnd / duration) * 100;
       }
+
+      pendingTimeUpdateRef.current = { currentTime, duration, buffered };
+
+      // Cancel previous animation frame if pending
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+
+      // Batch state updates using requestAnimationFrame (max 60 updates/second)
+      rafIdRef.current = requestAnimationFrame(() => {
+        if (pendingTimeUpdateRef.current) {
+          const { currentTime, duration, buffered } = pendingTimeUpdateRef.current;
+          setCurrentTime(currentTime);
+          setDuration(duration);
+          setBuffered(buffered);
+          pendingTimeUpdateRef.current = null;
+        }
+        rafIdRef.current = null;
+      });
 
       // Trigger throttled buffer check
       throttledCheckAndPreload();
@@ -595,6 +600,11 @@ export default function HLSVideoPlayer({
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('volumechange', handleVolumeChange);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      // Cleanup: cancel pending animation frame
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
     };
   }, [resetControlsTimeout, checkAndPreload, throttledCheckAndPreload]);
 
@@ -638,9 +648,19 @@ export default function HLSVideoPlayer({
       const progressBar = progressBarRef.current;
       if (!video || !progressBar) return;
 
-      const rect = progressBar.getBoundingClientRect();
-      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-      const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      // Use offsetX/offsetY when available (relative to element, no layout recalculation)
+      // Fallback to getBoundingClientRect for touch events
+      let percent: number;
+      if ('touches' in e) {
+        // Touch event: use getBoundingClientRect
+        const rect = progressBar.getBoundingClientRect();
+        const clientX = e.touches[0].clientX;
+        percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      } else {
+        // Mouse event: use offsetX (relative to element, more efficient)
+        const offsetX = e.nativeEvent.offsetX ?? (e.clientX - progressBar.getBoundingClientRect().left);
+        percent = Math.max(0, Math.min(1, offsetX / progressBar.offsetWidth));
+      }
       const newTime = percent * duration;
 
       // Save play state before seeking (important for manual seek via progress bar)
@@ -662,9 +682,19 @@ export default function HLSVideoPlayer({
       const volumeBar = volumeBarRef.current;
       if (!video || !volumeBar) return;
 
-      const rect = volumeBar.getBoundingClientRect();
-      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-      const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      // Use offsetX/offsetY when available (relative to element, no layout recalculation)
+      // Fallback to getBoundingClientRect for touch events
+      let percent: number;
+      if ('touches' in e) {
+        // Touch event: use getBoundingClientRect
+        const rect = volumeBar.getBoundingClientRect();
+        const clientX = e.touches[0].clientX;
+        percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      } else {
+        // Mouse event: use offsetX (relative to element, more efficient)
+        const offsetX = e.nativeEvent.offsetX ?? (e.clientX - volumeBar.getBoundingClientRect().left);
+        percent = Math.max(0, Math.min(1, offsetX / volumeBar.offsetWidth));
+      }
 
       video.volume = percent;
       setVolume(percent);
@@ -726,6 +756,10 @@ export default function HLSVideoPlayer({
     },
     [duration]
   );
+
+  // Memoize formatted time strings to avoid recalculating on every render
+  const formattedCurrentTime = useMemo(() => formatTime(currentTime), [currentTime]);
+  const formattedDuration = useMemo(() => formatTime(duration), [duration]);
 
   return (
     <div
@@ -896,7 +930,7 @@ export default function HLSVideoPlayer({
 
             {/* Time Display */}
             <div className="flex-1 text-white/90 text-xs md:text-sm font-medium tabular-nums">
-              {formatTime(currentTime)} / {formatTime(duration)}
+              {formattedCurrentTime} / {formattedDuration}
             </div>
 
             {/* Quality Selector */}
