@@ -306,6 +306,8 @@ export default function HLSVideoPlayer({
   const CHECK_INTERVAL = 1000; // Check every 1 second (reduced from 2s for faster response to buffer depletion)
   // Flag to prevent duplicate execution of checkAndPreload when multiple event handlers fire simultaneously
   const isCheckingPreloadRef = useRef<boolean>(false);
+  // Interval ref for automatic preload during buffering
+  const bufferingPreloadIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // checkAndPreload function - moved to component level to be accessible from main handlers
   // Works entirely with segments for HLS streaming (not seconds)
@@ -781,6 +783,43 @@ export default function HLSVideoPlayer({
       }
     };
   }, [resetControlsTimeout, checkAndPreload, throttledCheckAndPreload, throttledStartLoad, getBufferedEnd]);
+
+  // Automatic preload during buffering - continuously preload segments while buffering is active
+  useEffect(() => {
+    if (isBuffering) {
+      // Start aggressive preload interval when buffering begins
+      // Use 500ms interval (faster than normal CHECK_INTERVAL) to build buffer quickly
+      const BUFFERING_PRELOAD_INTERVAL = 500;
+      
+      // Clear any existing interval first
+      if (bufferingPreloadIntervalRef.current) {
+        clearInterval(bufferingPreloadIntervalRef.current);
+        bufferingPreloadIntervalRef.current = null;
+      }
+
+      // Start interval to continuously preload while buffering
+      bufferingPreloadIntervalRef.current = setInterval(() => {
+        checkAndPreload();
+      }, BUFFERING_PRELOAD_INTERVAL);
+
+      debugLog('[Video] Started automatic preload during buffering');
+    } else {
+      // Clear interval when buffering stops
+      if (bufferingPreloadIntervalRef.current) {
+        clearInterval(bufferingPreloadIntervalRef.current);
+        bufferingPreloadIntervalRef.current = null;
+        debugLog('[Video] Stopped automatic preload (buffering ended)');
+      }
+    }
+
+    // Cleanup: clear interval on unmount or when isBuffering changes
+    return () => {
+      if (bufferingPreloadIntervalRef.current) {
+        clearInterval(bufferingPreloadIntervalRef.current);
+        bufferingPreloadIntervalRef.current = null;
+      }
+    };
+  }, [isBuffering, checkAndPreload]);
 
   // Play/Pause toggle
   const togglePlayPause = useCallback(() => {
