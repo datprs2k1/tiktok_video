@@ -429,9 +429,40 @@ export default function HLSVideoPlayer({
         setCurrentLevel(hls.currentLevel);
 
         // Restore position after error recovery
+        // Only restore if we're actually recovering and not during/after a user seek
         if (isRecoveringRef.current && savedPositionRef.current > 0) {
           const video = videoRef.current;
           if (video) {
+            // Check if a seek operation just happened (within last 2 seconds)
+            // This prevents position restoration from interfering with user-initiated seeks
+            const timeSinceSeek = Date.now() - lastSeekTimeRef.current;
+            const SEEK_COOLDOWN_MS = 2000; // 2 seconds cooldown after seek
+
+            // Skip position restoration if:
+            // 1. Currently seeking
+            // 2. A seek just happened (within cooldown period)
+            // 3. Saved position is invalid (0, NaN, or negative)
+            if (
+              isSeekingRef.current ||
+              timeSinceSeek < SEEK_COOLDOWN_MS ||
+              !isFinite(savedPositionRef.current) ||
+              savedPositionRef.current <= 0
+            ) {
+              debugLog(
+                '[HLS] Skipping position restoration - seek in progress or recent seek detected',
+                'isSeeking:',
+                isSeekingRef.current,
+                'timeSinceSeek:',
+                timeSinceSeek,
+                'savedPosition:',
+                savedPositionRef.current
+              );
+              // Reset recovery flags since we're skipping restoration
+              isRecoveringRef.current = false;
+              savedPositionRef.current = 0;
+              return;
+            }
+
             // Track if restore is in progress to prevent race condition from multiple calls
             let restoreInProgress = false;
             // Wait for video to be ready before restoring position
@@ -440,12 +471,24 @@ export default function HLSVideoPlayer({
               if (restoreInProgress || !isRecoveringRef.current) {
                 return;
               }
+
+              // Double-check: skip if seek happened during restore delay
+              const timeSinceSeekCheck = Date.now() - lastSeekTimeRef.current;
+              if (isSeekingRef.current || timeSinceSeekCheck < SEEK_COOLDOWN_MS) {
+                debugLog('[HLS] Skipping position restoration - seek detected during restore delay');
+                isRecoveringRef.current = false;
+                savedPositionRef.current = 0;
+                return;
+              }
+
               restoreInProgress = true;
 
               if (isVideoReady(video)) {
                 // Video has enough data to seek
-                video.currentTime = savedPositionRef.current;
+                const positionToRestore = savedPositionRef.current;
+                video.currentTime = positionToRestore;
                 isRecoveringRef.current = false;
+                savedPositionRef.current = 0; // Clear saved position after successful restore
                 restoreInProgress = false;
                 // Clear any pending timeouts
                 if (restorePositionTimeoutRef.current) {
@@ -456,7 +499,7 @@ export default function HLSVideoPlayer({
                   clearTimeout(restorePositionFallbackTimeoutRef.current);
                   restorePositionFallbackTimeoutRef.current = null;
                 }
-                debugLog('[HLS] Position restored after recovery:', savedPositionRef.current);
+                debugLog('[HLS] Position restored after recovery:', positionToRestore);
               } else {
                 restoreInProgress = false; // Reset flag if not ready yet
                 // Clear existing timeout before creating new one
