@@ -274,19 +274,9 @@ export default function HLSVideoPlayer({
 
     if (Hls.isSupported()) {
       const hls = new Hls({
-        enableWorker: true, // Enable Web Worker for better performance
-        lowLatencyMode: false,
-        // Adaptive Bitrate Streaming (ABR) configuration
-        maxBufferLength: 120, // Maximum buffer length in seconds
-        maxMaxBufferLength: 120, // Maximum max buffer length in seconds
-        maxBufferSize: 60 * 1024 * 1024, // Maximum buffer size in bytes (60MB) - prevents memory issues
-        maxBufferHole: 0.5, // Maximum gap tolerance in seconds - allows small gaps without stalling
-        minAutoBitrate: 100000, // Minimum bitrate for auto quality (100kbps) - quality floor
-        startLevel: -1, // Auto-select initial quality level (-1 = auto)
-        capLevelToPlayerSize: true, // Cap quality to player size
-        abrEwmaDefaultEstimate: initialBandwidth || 1000000, // Use initial detected bandwidth or default 1Mbps
-        abrBandWidthFactor: 0.95, // Bandwidth factor for ABR
-        abrBandWidthUpFactor: 0.7, // Bandwidth up factor for ABR
+        maxBufferSize: 0,
+        backBufferLength: 2,
+        enableWorker: false,
       });
       hlsRef.current = hls;
 
