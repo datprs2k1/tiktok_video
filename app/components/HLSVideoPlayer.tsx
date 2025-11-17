@@ -530,7 +530,8 @@ export default function HLSVideoPlayer({
             pendingPlayPromiseRef.current = null;
           }
           // Pause video during seeking (will resume in handleSeeked if was playing)
-          if (!video.paused) {
+          // BUT: Don't pause when scrubbing - allow smooth scrubbing to work
+          if (!video.paused && !isScrubbingRef.current) {
             video.pause();
           }
           isSeekingRef.current = true;
@@ -541,7 +542,9 @@ export default function HLSVideoPlayer({
             'wasPlaying:',
             wasPlayingBeforeSeekRef.current,
             'video.paused:',
-            video.paused
+            video.paused,
+            'isScrubbing:',
+            isScrubbingRef.current
           );
         }
       };
@@ -687,6 +690,7 @@ export default function HLSVideoPlayer({
   const [isScrubbing, setIsScrubbing] = useState(false);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastScrubTimeRef = useRef<number>(0);
+  const isScrubbingRef = useRef<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressBarRef = useRef<HTMLDivElement>(null);
   const volumeBarRef = useRef<HTMLDivElement>(null);
@@ -1138,6 +1142,7 @@ export default function HLSVideoPlayer({
             onTouchStart={(e) => {
               setIsDragging(true);
               setIsScrubbing(true);
+              isScrubbingRef.current = true;
               lastScrubTimeRef.current = performance.now();
               handleSeekClick(e);
             }}
@@ -1155,11 +1160,13 @@ export default function HLSVideoPlayer({
               }
               setIsDragging(false);
               setIsScrubbing(false);
+              isScrubbingRef.current = false;
               setSeekPreviewTime(null);
             }}
             onMouseDown={(e) => {
               setIsDragging(true);
               setIsScrubbing(true);
+              isScrubbingRef.current = true;
               lastScrubTimeRef.current = performance.now();
               handleSeekClick(e);
             }}
@@ -1177,6 +1184,7 @@ export default function HLSVideoPlayer({
               }
               setIsDragging(false);
               setIsScrubbing(false);
+              isScrubbingRef.current = false;
               setSeekPreviewTime(null);
             }}
             onMouseLeave={(e) => {
@@ -1186,6 +1194,7 @@ export default function HLSVideoPlayer({
               }
               setIsDragging(false);
               setIsScrubbing(false);
+              isScrubbingRef.current = false;
               setSeekPreviewTime(null);
             }}
           >
