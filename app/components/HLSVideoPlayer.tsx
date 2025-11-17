@@ -764,7 +764,7 @@ export default function HLSVideoPlayer({
       // Update seek preview
       setSeekPreviewTime(newTime);
     },
-    [duration, calculatePercentFromEvent]
+    [duration]
   );
 
   // Seek preview handler (shows time on hover/drag)
@@ -784,21 +784,18 @@ export default function HLSVideoPlayer({
   );
 
   // Volume handler
-  const handleVolumeChange = useCallback(
-    (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
-      const video = videoRef.current;
-      const volumeBar = volumeBarRef.current;
-      if (!video || !volumeBar) return;
+  const handleVolumeChange = useCallback((e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+    const video = videoRef.current;
+    const volumeBar = volumeBarRef.current;
+    if (!video || !volumeBar) return;
 
-      const percent = calculatePercentFromEvent(volumeBar, e);
+    const percent = calculatePercentFromEvent(volumeBar, e);
 
-      video.volume = percent;
-      setVolume(percent);
-      setIsMuted(percent === 0);
-      resetControlsTimeout();
-    },
-    []
-  );
+    video.volume = percent;
+    setVolume(percent);
+    setIsMuted(percent === 0);
+    resetControlsTimeout();
+  }, []);
 
   // Toggle mute
   const toggleMute = useCallback(() => {
