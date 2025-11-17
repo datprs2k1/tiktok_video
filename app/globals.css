@@ -326,6 +326,23 @@ body {
   transform: translate(-50%, -50%) scale(1);
 }
 
+/* Scrubbing state - when user is dragging the progress bar */
+.video-progress-container.scrubbing {
+  height: 6px;
+  cursor: grabbing;
+}
+
+.video-progress-container.scrubbing .video-progress-handle {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1.2);
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.8);
+}
+
+.video-progress-container.scrubbing .video-progress-current {
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.7);
+  transition: width 0s linear; /* Remove transition during scrubbing for instant feedback */
+}
+
 .video-progress-buffered {
   position: absolute;
   top: 0;

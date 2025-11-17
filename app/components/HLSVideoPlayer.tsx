@@ -684,7 +684,9 @@ export default function HLSVideoPlayer({
   const [seekPreviewTime, setSeekPreviewTime] = useState<number | null>(null);
   const [isBuffering, setIsBuffering] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isScrubbing, setIsScrubbing] = useState(false);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastScrubTimeRef = useRef<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressBarRef = useRef<HTMLDivElement>(null);
   const volumeBarRef = useRef<HTMLDivElement>(null);
@@ -823,8 +825,8 @@ export default function HLSVideoPlayer({
     resetControlsTimeout();
   }, [resetControlsTimeout, playVideoWithPromise]);
 
-  // Seek handler
-  const handleSeek = useCallback(
+  // Seek handler for click (immediate seek)
+  const handleSeekClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
       const video = videoRef.current;
       const progressBar = progressBarRef.current;
@@ -842,6 +844,42 @@ export default function HLSVideoPlayer({
       resetControlsTimeout();
     },
     [duration, resetControlsTimeout, calculatePercentFromEvent, savePlayStateBeforeSeek]
+  );
+
+  // Seek handler for drag (smooth scrubbing with throttling)
+  const handleSeekDrag = useCallback(
+    (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+      const video = videoRef.current;
+      const progressBar = progressBarRef.current;
+      if (!video || !progressBar) return;
+
+      const percent = calculatePercentFromEvent(progressBar, e);
+      const newTime = percent * duration;
+
+      // Throttle scrub updates using requestAnimationFrame (max 60 updates/second)
+      const now = performance.now();
+      const timeSinceLastScrub = now - lastScrubTimeRef.current;
+      const minScrubInterval = 16; // ~60fps (16.67ms per frame)
+
+      if (timeSinceLastScrub >= minScrubInterval) {
+        lastScrubTimeRef.current = now;
+        // Update video time for smooth scrubbing
+        video.currentTime = newTime;
+      } else {
+        // Schedule update for next frame
+        requestAnimationFrame(() => {
+          const video = videoRef.current;
+          if (video && isScrubbing) {
+            video.currentTime = newTime;
+            lastScrubTimeRef.current = performance.now();
+          }
+        });
+      }
+
+      // Update seek preview
+      setSeekPreviewTime(newTime);
+    },
+    [duration, calculatePercentFromEvent, isScrubbing]
   );
 
   // Seek preview handler (shows time on hover/drag)
@@ -1056,11 +1094,7 @@ export default function HLSVideoPlayer({
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
             </svg>
             <p className="video-error-text">{errorMessage}</p>
-            <button
-              onClick={() => setErrorMessage(null)}
-              className="video-error-close"
-              aria-label="Đóng thông báo lỗi"
-            >
+            <button onClick={() => setErrorMessage(null)} className="video-error-close" aria-label="Đóng thông báo lỗi">
               <svg className="video-error-close-icon" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
               </svg>
@@ -1099,40 +1133,59 @@ export default function HLSVideoPlayer({
           {/* Progress Bar */}
           <div
             ref={progressBarRef}
-            className="video-progress-container"
-            onClick={handleSeek}
+            className={`video-progress-container ${isScrubbing ? 'scrubbing' : ''}`}
+            onClick={handleSeekClick}
             onTouchStart={(e) => {
               setIsDragging(true);
-              handleSeek(e);
+              setIsScrubbing(true);
+              lastScrubTimeRef.current = performance.now();
+              handleSeekClick(e);
             }}
             onTouchMove={(e) => {
               if (isDragging) {
-                handleSeek(e);
-                handleSeekPreview(e);
-              }
-            }}
-            onTouchEnd={() => {
-              setIsDragging(false);
-              setSeekPreviewTime(null);
-            }}
-            onMouseDown={(e) => {
-              setIsDragging(true);
-              handleSeek(e);
-            }}
-            onMouseMove={(e) => {
-              if (isDragging) {
-                handleSeek(e);
-                handleSeekPreview(e);
+                handleSeekDrag(e);
               } else {
                 handleSeekPreview(e);
               }
             }}
-            onMouseUp={() => {
+            onTouchEnd={(e) => {
+              if (isDragging) {
+                // Final seek to exact position
+                handleSeekClick(e);
+              }
               setIsDragging(false);
+              setIsScrubbing(false);
               setSeekPreviewTime(null);
             }}
-            onMouseLeave={() => {
+            onMouseDown={(e) => {
+              setIsDragging(true);
+              setIsScrubbing(true);
+              lastScrubTimeRef.current = performance.now();
+              handleSeekClick(e);
+            }}
+            onMouseMove={(e) => {
+              if (isDragging) {
+                handleSeekDrag(e);
+              } else {
+                handleSeekPreview(e);
+              }
+            }}
+            onMouseUp={(e) => {
+              if (isDragging) {
+                // Final seek to exact position
+                handleSeekClick(e);
+              }
               setIsDragging(false);
+              setIsScrubbing(false);
+              setSeekPreviewTime(null);
+            }}
+            onMouseLeave={(e) => {
+              if (isDragging) {
+                // Final seek to exact position when leaving
+                handleSeekClick(e);
+              }
+              setIsDragging(false);
+              setIsScrubbing(false);
               setSeekPreviewTime(null);
             }}
           >
@@ -1144,10 +1197,7 @@ export default function HLSVideoPlayer({
             <div className="video-progress-handle" style={{ left: `${(currentTime / duration) * 100}%` }} />
             {/* Seek preview tooltip */}
             {seekPreviewTime !== null && (
-              <div
-                className="video-seek-preview-tooltip"
-                style={{ left: `${((seekPreviewTime / duration) * 100)}%` }}
-              >
+              <div className="video-seek-preview-tooltip" style={{ left: `${(seekPreviewTime / duration) * 100}%` }}>
                 {formatTime(seekPreviewTime)}
               </div>
             )}
