@@ -944,6 +944,7 @@ export default function HLSVideoPlayer({
         ref={videoRef}
         className={className}
         playsInline
+        preload="none"
         onDoubleClick={toggleFullscreen}
         onTouchEnd={handleDoubleTap}
       />
