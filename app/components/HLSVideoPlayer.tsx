@@ -126,6 +126,11 @@ export default function HLSVideoPlayer({
 
   // Network bandwidth detection
   const networkBandwidth = useNetworkBandwidth();
+  // Store initial bandwidth in ref to avoid recreating HLS instance when bandwidth changes
+  const initialBandwidthRef = useRef<number | null>(null);
+  if (initialBandwidthRef.current === null) {
+    initialBandwidthRef.current = networkBandwidth;
+  }
 
   // Seeking detection refs
   const isSeekingRef = useRef<boolean>(false);
@@ -265,7 +270,6 @@ export default function HLSVideoPlayer({
     playStateExplicitlySetRef.current = true; // Mark as explicitly set by manual seek
   }, []);
 
-
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -282,14 +286,14 @@ export default function HLSVideoPlayer({
         minAutoBitrate: 100000, // Minimum bitrate for auto quality (100kbps) - quality floor
         startLevel: -1, // Auto-select initial quality level (-1 = auto)
         capLevelToPlayerSize: true, // Cap quality to player size
-        abrEwmaDefaultEstimate: networkBandwidth || 1000000, // Use detected bandwidth or default 1Mbps (improved from 500kbps)
+        abrEwmaDefaultEstimate: initialBandwidthRef.current || 1000000, // Use initial detected bandwidth or default 1Mbps
         abrBandWidthFactor: 0.95, // Bandwidth factor for ABR
         abrBandWidthUpFactor: 0.7, // Bandwidth up factor for ABR
       });
       hlsRef.current = hls;
 
       // Error handling
-      hls.on(Hls.Events.ERROR, (event, data) => {
+      const handleError = (event: any, data: any) => {
         if (data.fatal) {
           const video = videoRef.current;
           switch (data.type) {
@@ -299,7 +303,13 @@ export default function HLSVideoPlayer({
               setErrorMessage('Lỗi kết nối mạng. Đang thử kết nối lại...');
               throttledStartLoad();
               // Clear error message after recovery attempt
-              setTimeout(() => setErrorMessage(null), 5000);
+              if (errorMessageTimeoutRef.current) {
+                clearTimeout(errorMessageTimeoutRef.current);
+              }
+              errorMessageTimeoutRef.current = setTimeout(() => {
+                errorMessageTimeoutRef.current = null;
+                setErrorMessage(null);
+              }, 5000);
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
               debugError('[HLS] Fatal media error:', data.details);
@@ -307,7 +317,13 @@ export default function HLSVideoPlayer({
               setErrorMessage('Lỗi phát video. Đang thử khôi phục...');
               hls.recoverMediaError();
               // Clear error message after recovery attempt
-              setTimeout(() => setErrorMessage(null), 5000);
+              if (errorMessageTimeoutRef.current) {
+                clearTimeout(errorMessageTimeoutRef.current);
+              }
+              errorMessageTimeoutRef.current = setTimeout(() => {
+                errorMessageTimeoutRef.current = null;
+                setErrorMessage(null);
+              }, 5000);
               break;
             default:
               debugError('[HLS] Fatal error:', data.type, data.details);
@@ -319,28 +335,32 @@ export default function HLSVideoPlayer({
         } else {
           debugWarn('[HLS] Non-fatal error:', data.details);
         }
-      });
+      };
+      hls.on(Hls.Events.ERROR, handleError);
 
       hls.loadSource(hlsUrl);
       hls.attachMedia(video);
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      const handleManifestParsed = () => {
         debugLog('[HLS] Manifest parsed, video ready to play');
         debugLog('[HLS] Levels:', hls.levels);
         setIsLoading(false);
         setAvailableLevels(hls.levels);
         setCurrentLevel(hls.currentLevel);
-      });
+      };
+      hls.on(Hls.Events.MANIFEST_PARSED, handleManifestParsed);
 
-      hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
+      const handleLevelLoaded = (event: any, data: any) => {
         debugLog('[HLS] Level loaded:', data);
         setCurrentLevel(hls.currentLevel);
-      });
+      };
+      hls.on(Hls.Events.LEVEL_LOADED, handleLevelLoaded);
 
-      hls.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
+      const handleLevelSwitched = (event: any, data: any) => {
         debugLog('[HLS] Level switched:', data);
         setCurrentLevel(hls.currentLevel);
-      });
+      };
+      hls.on(Hls.Events.LEVEL_SWITCHED, handleLevelSwitched);
 
       // Seeking detection event handlers
       const handleSeeking = () => {
@@ -464,6 +484,11 @@ export default function HLSVideoPlayer({
       return () => {
         video.removeEventListener('seeking', handleSeeking);
         video.removeEventListener('seeked', handleSeeked);
+        // Remove HLS event listeners before destroy
+        hls.off(Hls.Events.ERROR, handleError);
+        hls.off(Hls.Events.MANIFEST_PARSED, handleManifestParsed);
+        hls.off(Hls.Events.LEVEL_LOADED, handleLevelLoaded);
+        hls.off(Hls.Events.LEVEL_SWITCHED, handleLevelSwitched);
         hls.destroy();
         // Set ref to null to prevent duplicate destroy in outer cleanup
         if (hlsRef.current === hls) {
@@ -488,6 +513,10 @@ export default function HLSVideoPlayer({
         clearTimeout(resumePlaybackTimeoutRef.current);
         resumePlaybackTimeoutRef.current = null;
       }
+      if (errorMessageTimeoutRef.current) {
+        clearTimeout(errorMessageTimeoutRef.current);
+        errorMessageTimeoutRef.current = null;
+      }
       // Cancel any pending resume playback animation frame
       if (resumePlaybackRafRef.current !== null) {
         cancelAnimationFrame(resumePlaybackRafRef.current);
@@ -499,7 +528,7 @@ export default function HLSVideoPlayer({
         hlsRef.current = null;
       }
     };
-  }, [hlsUrl, networkBandwidth, throttledStartLoad, isVideoReady]);
+  }, [hlsUrl]);
 
   // Player state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -517,6 +546,8 @@ export default function HLSVideoPlayer({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const errorMessageTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isPlayingRef = useRef<boolean>(false);
   const lastScrubTimeRef = useRef<number>(0);
   const isScrubbingRef = useRef<boolean>(false);
   // Track pending requestAnimationFrame for seek drag to prevent duplicate seeking events
@@ -531,12 +562,12 @@ export default function HLSVideoPlayer({
       clearTimeout(controlsTimeoutRef.current);
     }
     setShowControls(true);
-    if (isPlaying) {
+    if (isPlayingRef.current) {
       controlsTimeoutRef.current = setTimeout(() => {
         setShowControls(false);
       }, 3000);
     }
-  }, [isPlaying]);
+  }, []);
 
   // Video event handlers
   useEffect(() => {
@@ -545,11 +576,13 @@ export default function HLSVideoPlayer({
 
     const handlePlay = () => {
       setIsPlaying(true);
+      isPlayingRef.current = true;
       resetControlsTimeout();
     };
 
     const handlePause = () => {
       setIsPlaying(false);
+      isPlayingRef.current = false;
       // Use resetControlsTimeout for consistent controls visibility logic
       // This will set showControls to true and won't set timeout since isPlaying is now false
       resetControlsTimeout();
@@ -646,8 +679,13 @@ export default function HLSVideoPlayer({
         cancelAnimationFrame(rafIdRef.current);
         rafIdRef.current = null;
       }
+      // Cleanup: clear controls timeout
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+        controlsTimeoutRef.current = null;
+      }
     };
-  }, [resetControlsTimeout, throttledStartLoad, getBufferedEnd]);
+  }, [resetControlsTimeout]);
 
   // Play/Pause toggle
   const togglePlayPause = useCallback(() => {
