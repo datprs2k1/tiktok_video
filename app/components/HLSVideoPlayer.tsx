@@ -167,7 +167,7 @@ export default function HLSVideoPlayer({
     const hls = hlsRef.current;
     if (!hls) return;
     // CRITICAL: Check if HLS is already loading to prevent duplicate requests
-    if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
+    if ('loading' in hls && (hls as HLSWithLoading).loading) {
       return; // Already loading, skip to prevent duplicate segment requests
     }
 
@@ -182,9 +182,7 @@ export default function HLSVideoPlayer({
         clearTimeout(pendingTimeoutRef.current);
         pendingTimeoutRef.current = null;
       }
-      if (hls) {
-        hls.startLoad();
-      }
+      hls.startLoad();
     } else {
       // Schedule delayed call if within throttle window
       // Cancel existing timeout to prevent accumulation
@@ -197,15 +195,14 @@ export default function HLSVideoPlayer({
         pendingTimeoutRef.current = null; // Clear ref when timeout fires
         // Check again if still loading before executing
         const hls = hlsRef.current;
-        if (hls && 'loading' in hls && (hls as HLSWithLoading).loading) {
+        if (!hls) return;
+        if ('loading' in hls && (hls as HLSWithLoading).loading) {
           return; // Already loading, skip
         }
         const now = Date.now();
         if (now - lastLoadTimeRef.current >= minInterval) {
           lastLoadTimeRef.current = now;
-          if (hls) {
-            hls.startLoad();
-          }
+          hls.startLoad();
         }
       }, remainingTime);
     }
@@ -214,6 +211,8 @@ export default function HLSVideoPlayer({
   const lastSeekTimeRef = useRef<number>(0);
   // Track play state before seeking to resume after seek completes
   const wasPlayingBeforeSeekRef = useRef<boolean>(false);
+  // Track if play state was explicitly set by manual seek (to prevent handleSeeking from overwriting)
+  const playStateExplicitlySetRef = useRef<boolean>(false);
   // Track pending play promise to avoid interruptions
   const pendingPlayPromiseRef = useRef<Promise<void> | null>(null);
 
@@ -285,6 +284,7 @@ export default function HLSVideoPlayer({
   // Helper function to save play state before seeking (eliminates duplication)
   const savePlayStateBeforeSeek = useCallback((video: HTMLVideoElement) => {
     wasPlayingBeforeSeekRef.current = !video.paused;
+    playStateExplicitlySetRef.current = true; // Mark as explicitly set by manual seek
   }, []);
 
   // Throttled buffer checking - moved to component level for accessibility
@@ -465,9 +465,9 @@ export default function HLSVideoPlayer({
         const video = videoRef.current;
         if (video) {
           // Save play state BEFORE pausing to ensure correct state is captured
-          // Only update if ref hasn't been set yet (by handleSeek or handleDoubleTap)
+          // Only update if play state wasn't explicitly set by manual seek (handleSeek or handleDoubleTap)
           // This preserves the value set by manual seek handlers and only updates for programmatic seeks
-          if (!wasPlayingBeforeSeekRef.current) {
+          if (!playStateExplicitlySetRef.current) {
             wasPlayingBeforeSeekRef.current = !video.paused;
           }
           // Cancel any pending play promise
@@ -494,10 +494,14 @@ export default function HLSVideoPlayer({
       const handleSeeked = () => {
         const video = videoRef.current;
         if (video && hls) {
-          isSeekingRef.current = false;
           const newPosition = video.currentTime;
           // Capture wasPlaying value before any other operations
           const wasPlaying = wasPlayingBeforeSeekRef.current;
+          // Reset flag for next seek operation
+          playStateExplicitlySetRef.current = false;
+          // Track seek completion time to prevent duplicate preload (set before isSeekingRef to prevent race condition)
+          lastSeekTimeRef.current = Date.now();
+          isSeekingRef.current = false;
           debugLog(
             '[HLS] Seeking completed, new position:',
             newPosition,
@@ -506,8 +510,6 @@ export default function HLSVideoPlayer({
             'video.paused:',
             video.paused
           );
-          // Track seek completion time to prevent duplicate preload
-          lastSeekTimeRef.current = Date.now();
           // Trigger immediate prefetch around seek position
           throttledStartLoad();
           // Resume playback if video was playing before seek
@@ -543,7 +545,7 @@ export default function HLSVideoPlayer({
                 // Fallback timeout in case canplay doesn't fire
                 setTimeout(() => {
                   video.removeEventListener('canplay', onCanPlay);
-                  if (video.paused && wasPlayingBeforeSeekRef.current) {
+                  if (video.paused && wasPlaying) {
                     resumePlayback();
                   }
                 }, 1000);
