@@ -389,20 +389,27 @@ export default function HLSVideoPlayer({
             case Hls.ErrorTypes.NETWORK_ERROR:
               debugError('[HLS] Fatal network error:', data.details, 'URL:', data.url);
               debugError('[HLS] Trying to recover...');
+              setErrorMessage('Lỗi kết nối mạng. Đang thử kết nối lại...');
               // Preserve current position before recovery
               savePositionForRecovery(video);
               throttledStartLoad();
+              // Clear error message after recovery attempt
+              setTimeout(() => setErrorMessage(null), 5000);
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
               debugError('[HLS] Fatal media error:', data.details);
               debugError('[HLS] Trying to recover...');
+              setErrorMessage('Lỗi phát video. Đang thử khôi phục...');
               // Preserve current position before recovery
               savePositionForRecovery(video);
               hls.recoverMediaError();
+              // Clear error message after recovery attempt
+              setTimeout(() => setErrorMessage(null), 5000);
               break;
             default:
               debugError('[HLS] Fatal error:', data.type, data.details);
               debugError('[HLS] Destroying instance...');
+              setErrorMessage('Đã xảy ra lỗi khi phát video. Vui lòng thử lại.');
               hls.destroy();
               break;
           }
@@ -674,6 +681,9 @@ export default function HLSVideoPlayer({
   const [isDragging, setIsDragging] = useState(false);
   const [isVolumeDragging, setIsVolumeDragging] = useState(false);
   const [buffered, setBuffered] = useState(0);
+  const [seekPreviewTime, setSeekPreviewTime] = useState<number | null>(null);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressBarRef = useRef<HTMLDivElement>(null);
@@ -758,11 +768,25 @@ export default function HLSVideoPlayer({
       setIsFullscreen(!!document.fullscreenElement);
     };
 
+    const handleWaiting = () => {
+      // Video is waiting for data (buffering)
+      setIsBuffering(true);
+      debugLog('[Video] Buffering...');
+    };
+
+    const handlePlaying = () => {
+      // Video has enough data and is playing
+      setIsBuffering(false);
+      debugLog('[Video] Playing');
+    };
+
     video.addEventListener('play', handlePlay);
     video.addEventListener('pause', handlePause);
     video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('volumechange', handleVolumeChange);
+    video.addEventListener('waiting', handleWaiting);
+    video.addEventListener('playing', handlePlaying);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
 
     return () => {
@@ -771,6 +795,8 @@ export default function HLSVideoPlayer({
       video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('volumechange', handleVolumeChange);
+      video.removeEventListener('waiting', handleWaiting);
+      video.removeEventListener('playing', handlePlaying);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       // Cleanup: cancel pending animation frame
       if (rafIdRef.current !== null) {
@@ -816,6 +842,22 @@ export default function HLSVideoPlayer({
       resetControlsTimeout();
     },
     [duration, resetControlsTimeout, calculatePercentFromEvent, savePlayStateBeforeSeek]
+  );
+
+  // Seek preview handler (shows time on hover/drag)
+  const handleSeekPreview = useCallback(
+    (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+      const progressBar = progressBarRef.current;
+      if (!progressBar || duration === 0) {
+        setSeekPreviewTime(null);
+        return;
+      }
+
+      const percent = calculatePercentFromEvent(progressBar, e);
+      const previewTime = percent * duration;
+      setSeekPreviewTime(previewTime);
+    },
+    [duration, calculatePercentFromEvent]
   );
 
   // Volume handler
@@ -890,6 +932,80 @@ export default function HLSVideoPlayer({
     [duration, savePlayStateBeforeSeek]
   );
 
+  // Keyboard shortcuts handler
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore keyboard shortcuts when user is typing in an input field
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const video = videoRef.current;
+      if (!video) return;
+
+      switch (e.key) {
+        case ' ': // Space - Play/Pause
+          e.preventDefault();
+          togglePlayPause();
+          break;
+        case 'ArrowLeft': // Left Arrow - Seek backward 5 seconds
+          e.preventDefault();
+          savePlayStateBeforeSeek(video);
+          video.currentTime = Math.max(0, video.currentTime - 5);
+          break;
+        case 'ArrowRight': // Right Arrow - Seek forward 5 seconds
+          e.preventDefault();
+          savePlayStateBeforeSeek(video);
+          video.currentTime = Math.min(duration, video.currentTime + 5);
+          break;
+        case 'ArrowUp': // Up Arrow - Increase volume 5%
+          e.preventDefault();
+          video.volume = Math.min(1, video.volume + 0.05);
+          setVolume(video.volume);
+          setIsMuted(video.volume === 0);
+          break;
+        case 'ArrowDown': // Down Arrow - Decrease volume 5%
+          e.preventDefault();
+          video.volume = Math.max(0, video.volume - 0.05);
+          setVolume(video.volume);
+          setIsMuted(video.volume === 0);
+          break;
+        case 'm':
+        case 'M': // M - Toggle mute
+          e.preventDefault();
+          toggleMute();
+          break;
+        case 'f':
+        case 'F': // F - Toggle fullscreen
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+        case 'Escape': // Escape - Exit fullscreen
+          if (document.fullscreenElement) {
+            e.preventDefault();
+            document.exitFullscreen();
+          }
+          break;
+      }
+    };
+
+    container.addEventListener('keydown', handleKeyDown);
+    // Also listen on window for when container doesn't have focus
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      container.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [togglePlayPause, toggleMute, toggleFullscreen, duration, savePlayStateBeforeSeek]);
+
   // Memoize formatted time strings to avoid recalculating on every render
   const formattedCurrentTime = useMemo(() => formatTime(currentTime), [currentTime]);
   const formattedDuration = useMemo(() => formatTime(duration), [duration]);
@@ -898,6 +1014,7 @@ export default function HLSVideoPlayer({
     <div
       ref={containerRef}
       className="relative w-full h-full group video-player-container"
+      tabIndex={0}
       onMouseMove={resetControlsTimeout}
       onMouseLeave={() => isPlaying && setShowControls(false)}
       onTouchStart={resetControlsTimeout}
@@ -917,6 +1034,37 @@ export default function HLSVideoPlayer({
           <div className="video-loading-card">
             <div className="video-loading-spinner" />
             <p className="video-loading-text">Đang tải video...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Buffering indicator */}
+      {isBuffering && !isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center z-30 video-buffering-overlay">
+          <div className="video-buffering-card">
+            <div className="video-buffering-spinner" />
+            <p className="video-buffering-text">Đang tải dữ liệu...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Error message overlay */}
+      {errorMessage && (
+        <div className="absolute inset-0 flex items-center justify-center z-30 video-error-overlay">
+          <div className="video-error-card">
+            <svg className="video-error-icon" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+            </svg>
+            <p className="video-error-text">{errorMessage}</p>
+            <button
+              onClick={() => setErrorMessage(null)}
+              className="video-error-close"
+              aria-label="Đóng thông báo lỗi"
+            >
+              <svg className="video-error-close-icon" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+              </svg>
+            </button>
           </div>
         </div>
       )}
@@ -958,18 +1106,35 @@ export default function HLSVideoPlayer({
               handleSeek(e);
             }}
             onTouchMove={(e) => {
-              if (isDragging) handleSeek(e);
+              if (isDragging) {
+                handleSeek(e);
+                handleSeekPreview(e);
+              }
             }}
-            onTouchEnd={() => setIsDragging(false)}
+            onTouchEnd={() => {
+              setIsDragging(false);
+              setSeekPreviewTime(null);
+            }}
             onMouseDown={(e) => {
               setIsDragging(true);
               handleSeek(e);
             }}
             onMouseMove={(e) => {
-              if (isDragging) handleSeek(e);
+              if (isDragging) {
+                handleSeek(e);
+                handleSeekPreview(e);
+              } else {
+                handleSeekPreview(e);
+              }
             }}
-            onMouseUp={() => setIsDragging(false)}
-            onMouseLeave={() => setIsDragging(false)}
+            onMouseUp={() => {
+              setIsDragging(false);
+              setSeekPreviewTime(null);
+            }}
+            onMouseLeave={() => {
+              setIsDragging(false);
+              setSeekPreviewTime(null);
+            }}
           >
             {/* Buffered progress */}
             <div className="video-progress-buffered" style={{ width: `${buffered}%` }} />
@@ -977,6 +1142,15 @@ export default function HLSVideoPlayer({
             <div className="video-progress-current" style={{ width: `${(currentTime / duration) * 100}%` }} />
             {/* Progress handle */}
             <div className="video-progress-handle" style={{ left: `${(currentTime / duration) * 100}%` }} />
+            {/* Seek preview tooltip */}
+            {seekPreviewTime !== null && (
+              <div
+                className="video-seek-preview-tooltip"
+                style={{ left: `${((seekPreviewTime / duration) * 100)}%` }}
+              >
+                {formatTime(seekPreviewTime)}
+              </div>
+            )}
           </div>
 
           {/* Control Buttons */}
