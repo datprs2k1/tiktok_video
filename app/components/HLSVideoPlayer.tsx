@@ -434,7 +434,7 @@ export default function HLSVideoPlayer({
                 return;
               }
               restoreInProgress = true;
-              
+
               if (isVideoReady(video)) {
                 // Video has enough data to seek
                 video.currentTime = savedPositionRef.current;
@@ -702,7 +702,9 @@ export default function HLSVideoPlayer({
 
     const handlePause = () => {
       setIsPlaying(false);
-      setShowControls(true);
+      // Use resetControlsTimeout for consistent controls visibility logic
+      // This will set showControls to true and won't set timeout since isPlaying is now false
+      resetControlsTimeout();
       // Trigger buffer check on pause to maintain buffer
       checkAndPreload();
     };
