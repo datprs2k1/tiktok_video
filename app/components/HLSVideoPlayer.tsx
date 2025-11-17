@@ -540,7 +540,6 @@ export default function HLSVideoPlayer({
   const [isVolumeDragging, setIsVolumeDragging] = useState(false);
   const [buffered, setBuffered] = useState(0);
   const [seekPreviewTime, setSeekPreviewTime] = useState<number | null>(null);
-  const [isBuffering, setIsBuffering] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -630,19 +629,16 @@ export default function HLSVideoPlayer({
 
     const handleWaiting = () => {
       // Video is waiting for data (buffering)
-      setIsBuffering(true);
       debugLog('[Video] Buffering...');
     };
 
     const handlePlaying = () => {
       // Video has enough data and is playing
-      setIsBuffering(false);
       debugLog('[Video] Playing');
     };
 
     const handleStalled = () => {
       // Video element has stalled (stopped downloading)
-      setIsBuffering(true);
       debugLog('[Video] Stalled');
     };
 
@@ -955,16 +951,6 @@ export default function HLSVideoPlayer({
           <div className="video-loading-card">
             <div className="video-loading-spinner" />
             <p className="video-loading-text">Đang tải video...</p>
-          </div>
-        </div>
-      )}
-
-      {/* Buffering indicator */}
-      {isBuffering && !isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center z-30 video-buffering-overlay">
-          <div className="video-buffering-card">
-            <div className="video-buffering-spinner" />
-            <p className="video-buffering-text">Đang tải dữ liệu...</p>
           </div>
         </div>
       )}
