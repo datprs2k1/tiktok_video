@@ -635,6 +635,10 @@ export default function HLSVideoPlayer({
 
     return () => {
       // Cleanup all pending timeouts to prevent memory leaks
+      if (pendingTimeoutRef.current) {
+        clearTimeout(pendingTimeoutRef.current);
+        pendingTimeoutRef.current = null;
+      }
       if (restorePositionTimeoutRef.current) {
         clearTimeout(restorePositionTimeoutRef.current);
         restorePositionTimeoutRef.current = null;
