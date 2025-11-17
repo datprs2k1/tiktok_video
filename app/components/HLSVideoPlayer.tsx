@@ -66,41 +66,6 @@ interface HLSWithLoading extends Hls {
   loading?: boolean;
 }
 
-// Adaptive prefetch distance calculation (moved outside component for performance)
-// Returns number of segments to prefetch based on bandwidth and buffer health
-function calculateAdaptivePrefetchSegments(
-  bandwidth: number | null,
-  bufferHealthSegments: number,
-  segmentDuration: number
-): number {
-  // Convert bandwidth from bps to Mbps for easier comparison
-  const bandwidthMbps = bandwidth ? bandwidth / 1000000 : 5; // Default to 5 Mbps if null
-
-  let baseSegments: number;
-
-  if (bandwidthMbps > 10) {
-    // High bandwidth: prefetch 6+ segments ahead (60+ seconds, YouTube-like)
-    baseSegments = Math.ceil(60 / segmentDuration);
-  } else if (bandwidthMbps >= 3) {
-    // Medium bandwidth: prefetch 5+ segments ahead (45+ seconds, YouTube-like)
-    baseSegments = Math.ceil(45 / segmentDuration);
-  } else {
-    // Low bandwidth: prefetch 3+ segments ahead (30+ seconds, YouTube-like)
-    baseSegments = Math.ceil(30 / segmentDuration);
-  }
-
-  // Adjust based on buffer health (in segments): if buffer is low, increase prefetch distance more aggressively
-  if (bufferHealthSegments < 1) {
-    // Very low buffer (< 1 segment): double the prefetch distance for aggressive buffering
-    baseSegments *= 2.0;
-  } else if (bufferHealthSegments < 2) {
-    // Low buffer (< 2 segments): increase by 50% for faster recovery
-    baseSegments *= 1.5;
-  }
-
-  return Math.round(baseSegments);
-}
-
 // Network bandwidth detection utility
 function useNetworkBandwidth() {
   // Use initial state instead of setState in effect to avoid cascading renders
@@ -216,8 +181,6 @@ export default function HLSVideoPlayer({
       }, remainingTime);
     }
   }, []);
-  // Track seek completion time to prevent duplicate preload after seek
-  const lastSeekTimeRef = useRef<number>(0);
   // Track play state before seeking to resume after seek completes
   const wasPlayingBeforeSeekRef = useRef<boolean>(false);
   // Track if play state was explicitly set by manual seek (to prevent handleSeeking from overwriting)
@@ -226,7 +189,6 @@ export default function HLSVideoPlayer({
   const pendingPlayPromiseRef = useRef<Promise<void> | null>(null);
 
   // Refs for tracking timeouts to enable cleanup
-  const setupProgressiveLoadingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const resumePlaybackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Track pending requestAnimationFrame for resume playback to prevent duplicate play calls
   const resumePlaybackRafRef = useRef<number | null>(null);
@@ -303,93 +265,6 @@ export default function HLSVideoPlayer({
     playStateExplicitlySetRef.current = true; // Mark as explicitly set by manual seek
   }, []);
 
-  // Throttled buffer checking - moved to component level for accessibility
-  const lastCheckTimeRef = useRef<number>(0);
-  const CHECK_INTERVAL = 1000; // Check every 1 second (reduced from 2s for faster response to buffer depletion)
-  // Flag to prevent duplicate execution of checkAndPreload when multiple event handlers fire simultaneously
-  const isCheckingPreloadRef = useRef<boolean>(false);
-  // Interval ref for automatic preload during buffering
-  const bufferingPreloadIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  // Timeout ref for delayed interval start (to avoid duplicate with immediate call)
-  const bufferingPreloadStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // checkAndPreload function - moved to component level to be accessible from main handlers
-  // Works entirely with segments for HLS streaming (not seconds)
-  //
-  // CONFLICT PREVENTION: This function has multiple guards to prevent duplicate processing:
-  // 1. isCheckingPreloadRef: Prevents concurrent execution when multiple handlers fire simultaneously
-  // 2. HLS loading check: Prevents duplicate segment requests when HLS is already loading
-  // 3. isSeekingRef: Prevents execution during seeking (handleSeeked handles seek-triggered loads)
-  // 4. lastSeekTimeRef: Prevents execution immediately after seek (1.5s window for handleSeeked)
-  // 5. throttledStartLoad: Additional throttling at the HLS.startLoad() level (500ms minimum interval)
-  const checkAndPreload = useCallback(() => {
-    // Prevent duplicate execution when multiple event handlers fire simultaneously
-    // (e.g., handleWaiting and handleStalled can fire at the same time)
-    if (isCheckingPreloadRef.current) {
-      return; // Already checking, skip to prevent duplicate calculations
-    }
-
-    try {
-      isCheckingPreloadRef.current = true;
-
-      const video = videoRef.current;
-      const hls = hlsRef.current;
-      if (!video || !hls) return;
-
-      // Early exit: Check if HLS is already loading to prevent duplicate preload calls
-      // This check happens before any calculations to avoid unnecessary work
-      if ('loading' in hls && (hls as HLSWithLoading).loading) {
-        return; // Already loading, skip to prevent duplicate segment requests
-      }
-
-      // Skip normal prefetch during seeking to prevent duplicates with handleSeeked()
-      if (isSeekingRef.current) {
-        return; // handleSeeked() is the sole handler for seeking-triggered loads
-      }
-
-      // Skip normal prefetch if seek completed recently (within last 1.5 seconds)
-      // This prevents checkAndPreload() from triggering load right after seek,
-      // giving handleSeeked() exclusive control during immediate post-seek period
-      const timeSinceSeek = Date.now() - lastSeekTimeRef.current;
-      if (timeSinceSeek < 1500) {
-        return; // Skip normal prefetch if seek completed within last 1.5 seconds
-      }
-
-      // Normal prefetch logic (only runs when not seeking and not already loading)
-      // Segment duration: 10 seconds per segment (fixed)
-      const SEGMENT_DURATION = 10;
-      const currentTime = video.currentTime;
-      const bufferedEnd = getBufferedEnd(video);
-      const bufferAhead = bufferedEnd - currentTime;
-
-      // Calculate buffered segments directly (segment-based calculation)
-      const bufferedSegments = Math.floor(bufferAhead / SEGMENT_DURATION);
-      const minSegments = 5; // Minimum 5 segments required (YouTube-like: 4-6 segments)
-
-      // Calculate adaptive prefetch segments based on bandwidth and buffer health (both in segments)
-      const prefetchSegments = calculateAdaptivePrefetchSegments(networkBandwidth, bufferedSegments, SEGMENT_DURATION);
-
-      // Preload if buffer is less than minimum segments OR less than adaptive prefetch segments
-      // All comparisons are segment-based for consistency with HLS streaming
-      // YouTube-like: preload even when paused
-      if (bufferedSegments < minSegments || bufferedSegments < prefetchSegments) {
-        // Trigger HLS to load more segments
-        throttledStartLoad();
-      }
-    } finally {
-      // Always reset flag, even if function returns early or throws
-      isCheckingPreloadRef.current = false;
-    }
-  }, [networkBandwidth, throttledStartLoad, getBufferedEnd]);
-
-  // Throttled wrapper for checkAndPreload to prevent excessive calls
-  const throttledCheckAndPreload = useCallback(() => {
-    const now = Date.now();
-    if (now - lastCheckTimeRef.current >= CHECK_INTERVAL) {
-      lastCheckTimeRef.current = now;
-      checkAndPreload();
-    }
-  }, [checkAndPreload]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -400,8 +275,8 @@ export default function HLSVideoPlayer({
         enableWorker: true, // Enable Web Worker for better performance
         lowLatencyMode: false,
         // Adaptive Bitrate Streaming (ABR) configuration
-        maxBufferLength: 120, // Maximum buffer length in seconds (increased to accommodate preload requirements)
-        maxMaxBufferLength: 120, // Maximum max buffer length in seconds (increased to accommodate preload requirements)
+        maxBufferLength: 120, // Maximum buffer length in seconds
+        maxMaxBufferLength: 120, // Maximum max buffer length in seconds
         maxBufferSize: 60 * 1024 * 1024, // Maximum buffer size in bytes (60MB) - prevents memory issues
         maxBufferHole: 0.5, // Maximum gap tolerance in seconds - allows small gaps without stalling
         minAutoBitrate: 100000, // Minimum bitrate for auto quality (100kbps) - quality floor
@@ -455,23 +330,6 @@ export default function HLSVideoPlayer({
         setIsLoading(false);
         setAvailableLevels(hls.levels);
         setCurrentLevel(hls.currentLevel);
-
-        // Progressive loading: Preload next segments based on playback position
-        // Note: Event listeners are now handled in main video event handlers to avoid duplicates
-        const setupProgressiveLoading = () => {
-          // Start buffering immediately
-          checkAndPreload();
-        };
-
-        // Clear existing timeout before creating new one
-        if (setupProgressiveLoadingTimeoutRef.current) {
-          clearTimeout(setupProgressiveLoadingTimeoutRef.current);
-        }
-        // Setup progressive loading after a short delay to ensure video is ready
-        setupProgressiveLoadingTimeoutRef.current = setTimeout(() => {
-          setupProgressiveLoadingTimeoutRef.current = null;
-          setupProgressiveLoading();
-        }, 1000);
       });
 
       hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
@@ -510,9 +368,6 @@ export default function HLSVideoPlayer({
           }
           isSeekingRef.current = true;
           seekTargetRef.current = video.currentTime;
-          // Pause buffering interval during seeking to avoid unnecessary checkAndPreload calls
-          // The interval callback already checks isSeekingRef, but pausing is more efficient
-          // The interval will resume automatically when buffering continues after seek (if still buffering)
           debugLog(
             '[HLS] Seeking started, target:',
             seekTargetRef.current,
@@ -534,8 +389,6 @@ export default function HLSVideoPlayer({
           const wasPlaying = wasPlayingBeforeSeekRef.current;
           // Reset flag for next seek operation
           playStateExplicitlySetRef.current = false;
-          // Track seek completion time to prevent duplicate preload (set before isSeekingRef to prevent race condition)
-          lastSeekTimeRef.current = Date.now();
           isSeekingRef.current = false;
           debugLog(
             '[HLS] Seeking completed, new position:',
@@ -545,7 +398,7 @@ export default function HLSVideoPlayer({
             'video.paused:',
             video.paused
           );
-          // Trigger immediate prefetch around seek position
+          // Trigger HLS to load segments for the new seek position
           throttledStartLoad();
           // Resume playback if video was playing before seek
           if (wasPlaying) {
@@ -631,10 +484,6 @@ export default function HLSVideoPlayer({
         clearTimeout(pendingTimeoutRef.current);
         pendingTimeoutRef.current = null;
       }
-      if (setupProgressiveLoadingTimeoutRef.current) {
-        clearTimeout(setupProgressiveLoadingTimeoutRef.current);
-        setupProgressiveLoadingTimeoutRef.current = null;
-      }
       if (resumePlaybackTimeoutRef.current) {
         clearTimeout(resumePlaybackTimeoutRef.current);
         resumePlaybackTimeoutRef.current = null;
@@ -650,7 +499,7 @@ export default function HLSVideoPlayer({
         hlsRef.current = null;
       }
     };
-  }, [hlsUrl, networkBandwidth, throttledStartLoad, checkAndPreload, isVideoReady]);
+  }, [hlsUrl, networkBandwidth, throttledStartLoad, isVideoReady]);
 
   // Player state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -697,8 +546,6 @@ export default function HLSVideoPlayer({
     const handlePlay = () => {
       setIsPlaying(true);
       resetControlsTimeout();
-      // Trigger buffer check on play
-      checkAndPreload();
     };
 
     const handlePause = () => {
@@ -706,8 +553,6 @@ export default function HLSVideoPlayer({
       // Use resetControlsTimeout for consistent controls visibility logic
       // This will set showControls to true and won't set timeout since isPlaying is now false
       resetControlsTimeout();
-      // Trigger buffer check on pause to maintain buffer
-      checkAndPreload();
     };
 
     const handleTimeUpdate = () => {
@@ -735,9 +580,6 @@ export default function HLSVideoPlayer({
         }
         rafIdRef.current = null;
       });
-
-      // Trigger throttled buffer check
-      throttledCheckAndPreload();
     };
 
     const handleLoadedMetadata = () => {
@@ -759,9 +601,6 @@ export default function HLSVideoPlayer({
       // Video is waiting for data (buffering)
       setIsBuffering(true);
       debugLog('[Video] Buffering...');
-      // Trigger immediate aggressive preload to recover from buffer depletion
-      // checkAndPreload() already calls throttledStartLoad() internally, no need to call it again
-      checkAndPreload();
     };
 
     const handlePlaying = () => {
@@ -773,16 +612,11 @@ export default function HLSVideoPlayer({
     const handleStalled = () => {
       // Video element has stalled (stopped downloading)
       setIsBuffering(true);
-      debugLog('[Video] Stalled - triggering immediate preload');
-      // Trigger immediate aggressive preload to recover from stall
-      // checkAndPreload() already calls throttledStartLoad() internally, no need to call it again
-      checkAndPreload();
+      debugLog('[Video] Stalled');
     };
 
     const handleProgress = () => {
-      // Progress event fires during buffering - use for proactive buffer management
-      // Check buffer health and trigger preload if needed (throttled to avoid excessive calls)
-      throttledCheckAndPreload();
+      // Progress event fires during buffering
     };
 
     video.addEventListener('play', handlePlay);
@@ -813,74 +647,7 @@ export default function HLSVideoPlayer({
         rafIdRef.current = null;
       }
     };
-  }, [resetControlsTimeout, checkAndPreload, throttledCheckAndPreload, throttledStartLoad, getBufferedEnd]);
-
-  // Automatic preload during buffering - continuously preload segments while buffering is active
-  useEffect(() => {
-    if (isBuffering) {
-      // Start aggressive preload interval when buffering begins
-      // Use 500ms interval (faster than normal CHECK_INTERVAL) to build buffer quickly
-      const BUFFERING_PRELOAD_INTERVAL = 500;
-      // Delay interval start to avoid duplicate with immediate call in handleWaiting/handleStalled
-      // Immediate call provides fast response, then interval takes over after delay
-      const INTERVAL_START_DELAY = 300;
-
-      // Clear any existing interval and timeout first
-      if (bufferingPreloadIntervalRef.current) {
-        clearInterval(bufferingPreloadIntervalRef.current);
-        bufferingPreloadIntervalRef.current = null;
-      }
-      if (bufferingPreloadStartTimeoutRef.current) {
-        clearTimeout(bufferingPreloadStartTimeoutRef.current);
-        bufferingPreloadStartTimeoutRef.current = null;
-      }
-
-      // Delay interval start to allow immediate call in handleWaiting/handleStalled to complete first
-      // This avoids duplicate calls too close together while maintaining fast response
-      // Note: If isBuffering changes during delay, useEffect cleanup will clear this timeout
-      bufferingPreloadStartTimeoutRef.current = setTimeout(() => {
-        bufferingPreloadStartTimeoutRef.current = null;
-
-        // Start interval to continuously preload while buffering
-        // Note: checkAndPreload() will skip execution during seeking (via isSeekingRef check),
-        // but we pause the interval during seeking to avoid unnecessary function calls
-        bufferingPreloadIntervalRef.current = setInterval(() => {
-          // Skip interval callback if currently seeking (handleSeeked will handle preload after seek)
-          if (isSeekingRef.current) {
-            return;
-          }
-          checkAndPreload();
-        }, BUFFERING_PRELOAD_INTERVAL);
-
-        debugLog('[Video] Started automatic preload interval during buffering');
-      }, INTERVAL_START_DELAY);
-
-      debugLog('[Video] Scheduled automatic preload interval (delayed start)');
-    } else {
-      // Clear interval and timeout when buffering stops
-      if (bufferingPreloadIntervalRef.current) {
-        clearInterval(bufferingPreloadIntervalRef.current);
-        bufferingPreloadIntervalRef.current = null;
-      }
-      if (bufferingPreloadStartTimeoutRef.current) {
-        clearTimeout(bufferingPreloadStartTimeoutRef.current);
-        bufferingPreloadStartTimeoutRef.current = null;
-      }
-      debugLog('[Video] Stopped automatic preload (buffering ended)');
-    }
-
-    // Cleanup: clear interval and timeout on unmount or when isBuffering changes
-    return () => {
-      if (bufferingPreloadIntervalRef.current) {
-        clearInterval(bufferingPreloadIntervalRef.current);
-        bufferingPreloadIntervalRef.current = null;
-      }
-      if (bufferingPreloadStartTimeoutRef.current) {
-        clearTimeout(bufferingPreloadStartTimeoutRef.current);
-        bufferingPreloadStartTimeoutRef.current = null;
-      }
-    };
-  }, [isBuffering, checkAndPreload]);
+  }, [resetControlsTimeout, throttledStartLoad, getBufferedEnd]);
 
   // Play/Pause toggle
   const togglePlayPause = useCallback(() => {
