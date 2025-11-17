@@ -126,11 +126,9 @@ export default function HLSVideoPlayer({
 
   // Network bandwidth detection
   const networkBandwidth = useNetworkBandwidth();
-  // Store initial bandwidth in ref to avoid recreating HLS instance when bandwidth changes
-  const initialBandwidthRef = useRef<number | null>(null);
-  if (initialBandwidthRef.current === null) {
-    initialBandwidthRef.current = networkBandwidth;
-  }
+  // Store initial bandwidth to avoid recreating HLS instance when bandwidth changes
+  // Use useMemo to initialize only once, avoiding issues with React strict mode
+  const initialBandwidth = useMemo(() => networkBandwidth, []);
 
   // Seeking detection refs
   const isSeekingRef = useRef<boolean>(false);
@@ -286,7 +284,7 @@ export default function HLSVideoPlayer({
         minAutoBitrate: 100000, // Minimum bitrate for auto quality (100kbps) - quality floor
         startLevel: -1, // Auto-select initial quality level (-1 = auto)
         capLevelToPlayerSize: true, // Cap quality to player size
-        abrEwmaDefaultEstimate: initialBandwidthRef.current || 1000000, // Use initial detected bandwidth or default 1Mbps
+        abrEwmaDefaultEstimate: initialBandwidth || 1000000, // Use initial detected bandwidth or default 1Mbps
         abrBandWidthFactor: 0.95, // Bandwidth factor for ABR
         abrBandWidthUpFactor: 0.7, // Bandwidth up factor for ABR
       });
@@ -685,7 +683,7 @@ export default function HLSVideoPlayer({
         controlsTimeoutRef.current = null;
       }
     };
-  }, [resetControlsTimeout]);
+  }, []);
 
   // Play/Pause toggle
   const togglePlayPause = useCallback(() => {
@@ -702,7 +700,7 @@ export default function HLSVideoPlayer({
       video.pause();
     }
     resetControlsTimeout();
-  }, [resetControlsTimeout, playVideoWithPromise]);
+  }, []);
 
   // Seek handler for click (immediate seek)
   const handleSeekClick = useCallback(
@@ -722,7 +720,7 @@ export default function HLSVideoPlayer({
       video.currentTime = newTime;
       resetControlsTimeout();
     },
-    [duration, resetControlsTimeout, calculatePercentFromEvent, savePlayStateBeforeSeek]
+    [duration]
   );
 
   // Seek handler for drag (smooth scrubbing with throttling)
@@ -756,7 +754,7 @@ export default function HLSVideoPlayer({
         seekDragRafRef.current = requestAnimationFrame(() => {
           seekDragRafRef.current = null; // Clear ref when callback fires
           const video = videoRef.current;
-          if (video && isScrubbing) {
+          if (video && isScrubbingRef.current) {
             video.currentTime = newTime;
             lastScrubTimeRef.current = performance.now();
           }
@@ -766,7 +764,7 @@ export default function HLSVideoPlayer({
       // Update seek preview
       setSeekPreviewTime(newTime);
     },
-    [duration, calculatePercentFromEvent, isScrubbing]
+    [duration, calculatePercentFromEvent]
   );
 
   // Seek preview handler (shows time on hover/drag)
@@ -782,7 +780,7 @@ export default function HLSVideoPlayer({
       const previewTime = percent * duration;
       setSeekPreviewTime(previewTime);
     },
-    [duration, calculatePercentFromEvent]
+    [duration]
   );
 
   // Volume handler
@@ -799,7 +797,7 @@ export default function HLSVideoPlayer({
       setIsMuted(percent === 0);
       resetControlsTimeout();
     },
-    [resetControlsTimeout, calculatePercentFromEvent]
+    []
   );
 
   // Toggle mute
@@ -809,7 +807,7 @@ export default function HLSVideoPlayer({
     video.muted = !video.muted;
     setIsMuted(video.muted);
     resetControlsTimeout();
-  }, [resetControlsTimeout]);
+  }, []);
 
   // Toggle fullscreen
   const toggleFullscreen = useCallback(() => {
@@ -822,7 +820,7 @@ export default function HLSVideoPlayer({
       document.exitFullscreen();
     }
     resetControlsTimeout();
-  }, [resetControlsTimeout]);
+  }, []);
 
   // Double tap to seek (mobile)
   const lastTapRef = useRef(0);
@@ -854,7 +852,7 @@ export default function HLSVideoPlayer({
         lastTapRef.current = now;
       }
     },
-    [duration, savePlayStateBeforeSeek]
+    [duration]
   );
 
   // Keyboard shortcuts handler
@@ -929,7 +927,7 @@ export default function HLSVideoPlayer({
       container.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [togglePlayPause, toggleMute, toggleFullscreen, duration, savePlayStateBeforeSeek]);
+  }, [duration]);
 
   // Memoize formatted time strings to avoid recalculating on every render
   const formattedCurrentTime = useMemo(() => formatTime(currentTime), [currentTime]);
