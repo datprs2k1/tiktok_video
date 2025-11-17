@@ -67,33 +67,38 @@ interface HLSWithLoading extends Hls {
 }
 
 // Adaptive prefetch distance calculation (moved outside component for performance)
-function calculateAdaptivePrefetchDistance(bandwidth: number | null, bufferHealth: number): number {
+// Returns number of segments to prefetch based on bandwidth and buffer health
+function calculateAdaptivePrefetchSegments(
+  bandwidth: number | null,
+  bufferHealthSegments: number,
+  segmentDuration: number
+): number {
   // Convert bandwidth from bps to Mbps for easier comparison
   const bandwidthMbps = bandwidth ? bandwidth / 1000000 : 5; // Default to 5 Mbps if null
 
-  let baseDistance: number;
+  let baseSegments: number;
 
   if (bandwidthMbps > 10) {
-    // High bandwidth: prefetch 60+ seconds ahead (YouTube-like)
-    baseDistance = 60;
+    // High bandwidth: prefetch 6+ segments ahead (60+ seconds, YouTube-like)
+    baseSegments = Math.ceil(60 / segmentDuration);
   } else if (bandwidthMbps >= 3) {
-    // Medium bandwidth: prefetch 45+ seconds ahead (YouTube-like)
-    baseDistance = 45;
+    // Medium bandwidth: prefetch 5+ segments ahead (45+ seconds, YouTube-like)
+    baseSegments = Math.ceil(45 / segmentDuration);
   } else {
-    // Low bandwidth: prefetch 30+ seconds ahead (YouTube-like)
-    baseDistance = 30;
+    // Low bandwidth: prefetch 3+ segments ahead (30+ seconds, YouTube-like)
+    baseSegments = Math.ceil(30 / segmentDuration);
   }
 
-  // Adjust based on buffer health: if buffer is low, increase prefetch distance more aggressively
-  if (bufferHealth < 3) {
-    // Very low buffer: double the prefetch distance for aggressive buffering
-    baseDistance *= 2.0;
-  } else if (bufferHealth < 5) {
-    // Low buffer: increase by 50% (improved from 20% for faster recovery)
-    baseDistance *= 1.5;
+  // Adjust based on buffer health (in segments): if buffer is low, increase prefetch distance more aggressively
+  if (bufferHealthSegments < 1) {
+    // Very low buffer (< 1 segment): double the prefetch distance for aggressive buffering
+    baseSegments *= 2.0;
+  } else if (bufferHealthSegments < 2) {
+    // Low buffer (< 2 segments): increase by 50% for faster recovery
+    baseSegments *= 1.5;
   }
 
-  return Math.round(baseDistance);
+  return Math.round(baseSegments);
 }
 
 // Network bandwidth detection utility
@@ -301,15 +306,17 @@ export default function HLSVideoPlayer({
   const CHECK_INTERVAL = 1000; // Check every 1 second (reduced from 2s for faster response to buffer depletion)
 
   // checkAndPreload function - moved to component level to be accessible from main handlers
+  // Works entirely with segments for HLS streaming (not seconds)
   const checkAndPreload = useCallback(() => {
     const video = videoRef.current;
     const hls = hlsRef.current;
     if (!video || !hls) return;
 
-    const currentTime = video.currentTime;
-    const bufferedEnd = getBufferedEnd(video);
-    const bufferAhead = bufferedEnd - currentTime;
-    const bufferHealth = bufferAhead; // Current buffer health in seconds
+    // Early exit: Check if HLS is already loading to prevent duplicate preload calls
+    // This check happens before any calculations to avoid unnecessary work
+    if ('loading' in hls && (hls as HLSWithLoading).loading) {
+      return; // Already loading, skip to prevent duplicate segment requests
+    }
 
     // Skip normal prefetch during seeking to prevent duplicates with handleSeeked()
     if (isSeekingRef.current) {
@@ -324,19 +331,28 @@ export default function HLSVideoPlayer({
       return; // Skip normal prefetch if seek completed within last 1.5 seconds
     }
 
-    // Normal prefetch logic (only runs when not seeking)
+    // Normal prefetch logic (only runs when not seeking and not already loading)
     // Segment duration: 10 seconds per segment (fixed)
     const SEGMENT_DURATION = 10;
+    const currentTime = video.currentTime;
+    const bufferedEnd = getBufferedEnd(video);
+    const bufferAhead = bufferedEnd - currentTime;
+
+    // Calculate buffered segments directly (segment-based calculation)
     const bufferedSegments = Math.floor(bufferAhead / SEGMENT_DURATION);
     const minSegments = 5; // Minimum 5 segments required (YouTube-like: 4-6 segments)
 
-    // Calculate adaptive prefetch distance based on bandwidth and buffer health
-    const prefetchDistance = calculateAdaptivePrefetchDistance(networkBandwidth, bufferHealth);
+    // Calculate adaptive prefetch segments based on bandwidth and buffer health (both in segments)
+    const prefetchSegments = calculateAdaptivePrefetchSegments(
+      networkBandwidth,
+      bufferedSegments,
+      SEGMENT_DURATION
+    );
 
-    // Preload if buffer is less than 5 segments OR less than adaptive distance ahead
-    // This ensures minimum 5 segments while keeping adaptive optimization
+    // Preload if buffer is less than minimum segments OR less than adaptive prefetch segments
+    // All comparisons are segment-based for consistency with HLS streaming
     // YouTube-like: preload even when paused
-    if (bufferedSegments < minSegments || bufferAhead < prefetchDistance) {
+    if (bufferedSegments < minSegments || bufferedSegments < prefetchSegments) {
       // Trigger HLS to load more segments
       throttledStartLoad();
     }
@@ -700,9 +716,8 @@ export default function HLSVideoPlayer({
       setIsBuffering(true);
       debugLog('[Video] Buffering...');
       // Trigger immediate aggressive preload to recover from buffer depletion
-      // Bypass throttle to start loading immediately
+      // checkAndPreload() already calls throttledStartLoad() internally, no need to call it again
       checkAndPreload();
-      throttledStartLoad();
     };
 
     const handlePlaying = () => {
@@ -716,8 +731,8 @@ export default function HLSVideoPlayer({
       setIsBuffering(true);
       debugLog('[Video] Stalled - triggering immediate preload');
       // Trigger immediate aggressive preload to recover from stall
+      // checkAndPreload() already calls throttledStartLoad() internally, no need to call it again
       checkAndPreload();
-      throttledStartLoad();
     };
 
     const handleProgress = () => {
