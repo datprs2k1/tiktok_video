@@ -220,6 +220,12 @@ export default function HLSVideoPlayer({
   const savedPositionRef = useRef<number>(0);
   const isRecoveringRef = useRef<boolean>(false);
 
+  // Refs for tracking timeouts to enable cleanup
+  const restorePositionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const restorePositionFallbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const setupProgressiveLoadingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const resumePlaybackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   // Refs for batching timeupdate state updates with requestAnimationFrame
   const rafIdRef = useRef<number | null>(null);
   const pendingTimeUpdateRef = useRef<{ currentTime: number; duration: number; buffered: number } | null>(null);
@@ -345,7 +351,7 @@ export default function HLSVideoPlayer({
       // Trigger HLS to load more segments
       throttledStartLoad();
     }
-  }, [networkBandwidth, throttledStartLoad, getBufferedEnd, isVideoReady]);
+  }, [networkBandwidth, throttledStartLoad, getBufferedEnd]);
 
   // Throttled wrapper for checkAndPreload to prevent excessive calls
   const throttledCheckAndPreload = useCallback(() => {
@@ -419,16 +425,39 @@ export default function HLSVideoPlayer({
         if (isRecoveringRef.current && savedPositionRef.current > 0) {
           const video = videoRef.current;
           if (video) {
+            // Track if restore is in progress to prevent race condition from multiple calls
+            let restoreInProgress = false;
             // Wait for video to be ready before restoring position
             const restorePosition = () => {
+              // Prevent duplicate calls from multiple sources (immediate, event, timeout)
+              if (restoreInProgress || !isRecoveringRef.current) {
+                return;
+              }
+              restoreInProgress = true;
+              
               if (isVideoReady(video)) {
                 // Video has enough data to seek
                 video.currentTime = savedPositionRef.current;
                 isRecoveringRef.current = false;
+                restoreInProgress = false;
+                // Clear any pending timeouts
+                if (restorePositionTimeoutRef.current) {
+                  clearTimeout(restorePositionTimeoutRef.current);
+                  restorePositionTimeoutRef.current = null;
+                }
+                if (restorePositionFallbackTimeoutRef.current) {
+                  clearTimeout(restorePositionFallbackTimeoutRef.current);
+                  restorePositionFallbackTimeoutRef.current = null;
+                }
                 debugLog('[HLS] Position restored after recovery:', savedPositionRef.current);
               } else {
+                restoreInProgress = false; // Reset flag if not ready yet
+                // Clear existing timeout before creating new one
+                if (restorePositionTimeoutRef.current) {
+                  clearTimeout(restorePositionTimeoutRef.current);
+                }
                 // Wait a bit more for video to load
-                setTimeout(restorePosition, 100);
+                restorePositionTimeoutRef.current = setTimeout(restorePosition, 100);
               }
             };
             // Try to restore immediately, or wait if video not ready
@@ -436,8 +465,13 @@ export default function HLSVideoPlayer({
               restorePosition();
             } else {
               video.addEventListener('loadeddata', restorePosition, { once: true });
+              // Clear existing fallback timeout before creating new one
+              if (restorePositionFallbackTimeoutRef.current) {
+                clearTimeout(restorePositionFallbackTimeoutRef.current);
+              }
               // Fallback timeout
-              setTimeout(() => {
+              restorePositionFallbackTimeoutRef.current = setTimeout(() => {
+                restorePositionFallbackTimeoutRef.current = null;
                 if (isRecoveringRef.current) {
                   restorePosition();
                 }
@@ -453,8 +487,15 @@ export default function HLSVideoPlayer({
           checkAndPreload();
         };
 
+        // Clear existing timeout before creating new one
+        if (setupProgressiveLoadingTimeoutRef.current) {
+          clearTimeout(setupProgressiveLoadingTimeoutRef.current);
+        }
         // Setup progressive loading after a short delay to ensure video is ready
-        setTimeout(setupProgressiveLoading, 1000);
+        setupProgressiveLoadingTimeoutRef.current = setTimeout(() => {
+          setupProgressiveLoadingTimeoutRef.current = null;
+          setupProgressiveLoading();
+        }, 1000);
       });
 
       hls.on(Hls.Events.LEVEL_LOADED, (event, data) => {
@@ -549,9 +590,14 @@ export default function HLSVideoPlayer({
                   }
                 };
                 video.addEventListener('canplay', onCanPlay, { once: true });
+                // Clear existing timeout before creating new one
+                if (resumePlaybackTimeoutRef.current) {
+                  clearTimeout(resumePlaybackTimeoutRef.current);
+                }
                 // Fallback timeout in case canplay doesn't fire
                 // Note: If canplay fires, listener is auto-removed by { once: true }
-                setTimeout(() => {
+                resumePlaybackTimeoutRef.current = setTimeout(() => {
+                  resumePlaybackTimeoutRef.current = null;
                   if (video.paused && wasPlaying) {
                     resumePlayback();
                   }
@@ -588,6 +634,23 @@ export default function HLSVideoPlayer({
     }
 
     return () => {
+      // Cleanup all pending timeouts to prevent memory leaks
+      if (restorePositionTimeoutRef.current) {
+        clearTimeout(restorePositionTimeoutRef.current);
+        restorePositionTimeoutRef.current = null;
+      }
+      if (restorePositionFallbackTimeoutRef.current) {
+        clearTimeout(restorePositionFallbackTimeoutRef.current);
+        restorePositionFallbackTimeoutRef.current = null;
+      }
+      if (setupProgressiveLoadingTimeoutRef.current) {
+        clearTimeout(setupProgressiveLoadingTimeoutRef.current);
+        setupProgressiveLoadingTimeoutRef.current = null;
+      }
+      if (resumePlaybackTimeoutRef.current) {
+        clearTimeout(resumePlaybackTimeoutRef.current);
+        resumePlaybackTimeoutRef.current = null;
+      }
       // Only destroy if ref still points to an HLS instance (not already destroyed by inner cleanup)
       if (hlsRef.current) {
         hlsRef.current.destroy();
