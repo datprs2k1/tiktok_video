@@ -308,6 +308,8 @@ export default function HLSVideoPlayer({
   const isCheckingPreloadRef = useRef<boolean>(false);
   // Interval ref for automatic preload during buffering
   const bufferingPreloadIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Timeout ref for delayed interval start (to avoid duplicate with immediate call)
+  const bufferingPreloadStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // checkAndPreload function - moved to component level to be accessible from main handlers
   // Works entirely with segments for HLS streaming (not seconds)
@@ -790,33 +792,57 @@ export default function HLSVideoPlayer({
       // Start aggressive preload interval when buffering begins
       // Use 500ms interval (faster than normal CHECK_INTERVAL) to build buffer quickly
       const BUFFERING_PRELOAD_INTERVAL = 500;
-      
-      // Clear any existing interval first
+      // Delay interval start to avoid duplicate with immediate call in handleWaiting/handleStalled
+      // Immediate call provides fast response, then interval takes over after delay
+      const INTERVAL_START_DELAY = 300;
+
+      // Clear any existing interval and timeout first
       if (bufferingPreloadIntervalRef.current) {
         clearInterval(bufferingPreloadIntervalRef.current);
         bufferingPreloadIntervalRef.current = null;
       }
+      if (bufferingPreloadStartTimeoutRef.current) {
+        clearTimeout(bufferingPreloadStartTimeoutRef.current);
+        bufferingPreloadStartTimeoutRef.current = null;
+      }
 
-      // Start interval to continuously preload while buffering
-      bufferingPreloadIntervalRef.current = setInterval(() => {
-        checkAndPreload();
-      }, BUFFERING_PRELOAD_INTERVAL);
+      // Delay interval start to allow immediate call in handleWaiting/handleStalled to complete first
+      // This avoids duplicate calls too close together while maintaining fast response
+      // Note: If isBuffering changes during delay, useEffect cleanup will clear this timeout
+      bufferingPreloadStartTimeoutRef.current = setTimeout(() => {
+        bufferingPreloadStartTimeoutRef.current = null;
 
-      debugLog('[Video] Started automatic preload during buffering');
+        // Start interval to continuously preload while buffering
+        bufferingPreloadIntervalRef.current = setInterval(() => {
+          checkAndPreload();
+        }, BUFFERING_PRELOAD_INTERVAL);
+
+        debugLog('[Video] Started automatic preload interval during buffering');
+      }, INTERVAL_START_DELAY);
+
+      debugLog('[Video] Scheduled automatic preload interval (delayed start)');
     } else {
-      // Clear interval when buffering stops
+      // Clear interval and timeout when buffering stops
       if (bufferingPreloadIntervalRef.current) {
         clearInterval(bufferingPreloadIntervalRef.current);
         bufferingPreloadIntervalRef.current = null;
-        debugLog('[Video] Stopped automatic preload (buffering ended)');
       }
+      if (bufferingPreloadStartTimeoutRef.current) {
+        clearTimeout(bufferingPreloadStartTimeoutRef.current);
+        bufferingPreloadStartTimeoutRef.current = null;
+      }
+      debugLog('[Video] Stopped automatic preload (buffering ended)');
     }
 
-    // Cleanup: clear interval on unmount or when isBuffering changes
+    // Cleanup: clear interval and timeout on unmount or when isBuffering changes
     return () => {
       if (bufferingPreloadIntervalRef.current) {
         clearInterval(bufferingPreloadIntervalRef.current);
         bufferingPreloadIntervalRef.current = null;
+      }
+      if (bufferingPreloadStartTimeoutRef.current) {
+        clearTimeout(bufferingPreloadStartTimeoutRef.current);
+        bufferingPreloadStartTimeoutRef.current = null;
       }
     };
   }, [isBuffering, checkAndPreload]);
