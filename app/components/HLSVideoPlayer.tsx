@@ -277,6 +277,7 @@ export default function HLSVideoPlayer({
         maxBufferSize: 0,
         backBufferLength: 2,
         enableWorker: false,
+        lowLatencyMode: true,
       });
       hlsRef.current = hls;
 
