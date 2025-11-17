@@ -216,13 +216,7 @@ export default function HLSVideoPlayer({
   // Track pending play promise to avoid interruptions
   const pendingPlayPromiseRef = useRef<Promise<void> | null>(null);
 
-  // Position preservation refs for error recovery
-  const savedPositionRef = useRef<number>(0);
-  const isRecoveringRef = useRef<boolean>(false);
-
   // Refs for tracking timeouts to enable cleanup
-  const restorePositionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const restorePositionFallbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const setupProgressiveLoadingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const resumePlaybackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -242,15 +236,6 @@ export default function HLSVideoPlayer({
   // Helper function to check if video has enough data (eliminates duplication)
   const isVideoReady = useCallback((video: HTMLVideoElement): boolean => {
     return video.readyState >= 2; // HAVE_CURRENT_DATA or higher
-  }, []);
-
-  // Helper function to save position before error recovery (eliminates duplication)
-  const savePositionForRecovery = useCallback((video: HTMLVideoElement | null) => {
-    if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
-      savedPositionRef.current = video.currentTime;
-      isRecoveringRef.current = true;
-      debugLog('[HLS] Saved position before recovery:', savedPositionRef.current);
-    }
   }, []);
 
   // Helper function to calculate percent from mouse/touch event (eliminates duplication)
@@ -390,8 +375,6 @@ export default function HLSVideoPlayer({
               debugError('[HLS] Fatal network error:', data.details, 'URL:', data.url);
               debugError('[HLS] Trying to recover...');
               setErrorMessage('Lỗi kết nối mạng. Đang thử kết nối lại...');
-              // Preserve current position before recovery
-              savePositionForRecovery(video);
               throttledStartLoad();
               // Clear error message after recovery attempt
               setTimeout(() => setErrorMessage(null), 5000);
@@ -400,8 +383,6 @@ export default function HLSVideoPlayer({
               debugError('[HLS] Fatal media error:', data.details);
               debugError('[HLS] Trying to recover...');
               setErrorMessage('Lỗi phát video. Đang thử khôi phục...');
-              // Preserve current position before recovery
-              savePositionForRecovery(video);
               hls.recoverMediaError();
               // Clear error message after recovery attempt
               setTimeout(() => setErrorMessage(null), 5000);
@@ -427,108 +408,6 @@ export default function HLSVideoPlayer({
         setIsLoading(false);
         setAvailableLevels(hls.levels);
         setCurrentLevel(hls.currentLevel);
-
-        // Restore position after error recovery
-        // Only restore if we're actually recovering and not during/after a user seek
-        if (isRecoveringRef.current && savedPositionRef.current > 0) {
-          const video = videoRef.current;
-          if (video) {
-            // Check if a seek operation just happened (within last 2 seconds)
-            // This prevents position restoration from interfering with user-initiated seeks
-            const timeSinceSeek = Date.now() - lastSeekTimeRef.current;
-            const SEEK_COOLDOWN_MS = 2000; // 2 seconds cooldown after seek
-
-            // Skip position restoration if:
-            // 1. Currently seeking
-            // 2. A seek just happened (within cooldown period)
-            // 3. Saved position is invalid (0, NaN, or negative)
-            if (
-              isSeekingRef.current ||
-              timeSinceSeek < SEEK_COOLDOWN_MS ||
-              !isFinite(savedPositionRef.current) ||
-              savedPositionRef.current <= 0
-            ) {
-              debugLog(
-                '[HLS] Skipping position restoration - seek in progress or recent seek detected',
-                'isSeeking:',
-                isSeekingRef.current,
-                'timeSinceSeek:',
-                timeSinceSeek,
-                'savedPosition:',
-                savedPositionRef.current
-              );
-              // Reset recovery flags since we're skipping restoration
-              isRecoveringRef.current = false;
-              savedPositionRef.current = 0;
-              return;
-            }
-
-            // Track if restore is in progress to prevent race condition from multiple calls
-            let restoreInProgress = false;
-            // Wait for video to be ready before restoring position
-            const restorePosition = () => {
-              // Prevent duplicate calls from multiple sources (immediate, event, timeout)
-              if (restoreInProgress || !isRecoveringRef.current) {
-                return;
-              }
-
-              // Double-check: skip if seek happened during restore delay
-              const timeSinceSeekCheck = Date.now() - lastSeekTimeRef.current;
-              if (isSeekingRef.current || timeSinceSeekCheck < SEEK_COOLDOWN_MS) {
-                debugLog('[HLS] Skipping position restoration - seek detected during restore delay');
-                isRecoveringRef.current = false;
-                savedPositionRef.current = 0;
-                return;
-              }
-
-              restoreInProgress = true;
-
-              if (isVideoReady(video)) {
-                // Video has enough data to seek
-                const positionToRestore = savedPositionRef.current;
-                video.currentTime = positionToRestore;
-                isRecoveringRef.current = false;
-                savedPositionRef.current = 0; // Clear saved position after successful restore
-                restoreInProgress = false;
-                // Clear any pending timeouts
-                if (restorePositionTimeoutRef.current) {
-                  clearTimeout(restorePositionTimeoutRef.current);
-                  restorePositionTimeoutRef.current = null;
-                }
-                if (restorePositionFallbackTimeoutRef.current) {
-                  clearTimeout(restorePositionFallbackTimeoutRef.current);
-                  restorePositionFallbackTimeoutRef.current = null;
-                }
-                debugLog('[HLS] Position restored after recovery:', positionToRestore);
-              } else {
-                restoreInProgress = false; // Reset flag if not ready yet
-                // Clear existing timeout before creating new one
-                if (restorePositionTimeoutRef.current) {
-                  clearTimeout(restorePositionTimeoutRef.current);
-                }
-                // Wait a bit more for video to load
-                restorePositionTimeoutRef.current = setTimeout(restorePosition, 100);
-              }
-            };
-            // Try to restore immediately, or wait if video not ready
-            if (isVideoReady(video)) {
-              restorePosition();
-            } else {
-              video.addEventListener('loadeddata', restorePosition, { once: true });
-              // Clear existing fallback timeout before creating new one
-              if (restorePositionFallbackTimeoutRef.current) {
-                clearTimeout(restorePositionFallbackTimeoutRef.current);
-              }
-              // Fallback timeout
-              restorePositionFallbackTimeoutRef.current = setTimeout(() => {
-                restorePositionFallbackTimeoutRef.current = null;
-                if (isRecoveringRef.current) {
-                  restorePosition();
-                }
-              }, 1000);
-            }
-          }
-        }
 
         // Progressive loading: Preload next segments based on playback position
         // Note: Event listeners are now handled in main video event handlers to avoid duplicates
@@ -692,14 +571,6 @@ export default function HLSVideoPlayer({
         clearTimeout(pendingTimeoutRef.current);
         pendingTimeoutRef.current = null;
       }
-      if (restorePositionTimeoutRef.current) {
-        clearTimeout(restorePositionTimeoutRef.current);
-        restorePositionTimeoutRef.current = null;
-      }
-      if (restorePositionFallbackTimeoutRef.current) {
-        clearTimeout(restorePositionFallbackTimeoutRef.current);
-        restorePositionFallbackTimeoutRef.current = null;
-      }
       if (setupProgressiveLoadingTimeoutRef.current) {
         clearTimeout(setupProgressiveLoadingTimeoutRef.current);
         setupProgressiveLoadingTimeoutRef.current = null;
@@ -714,7 +585,7 @@ export default function HLSVideoPlayer({
         hlsRef.current = null;
       }
     };
-  }, [hlsUrl, networkBandwidth, savePositionForRecovery, throttledStartLoad, checkAndPreload, isVideoReady]);
+  }, [hlsUrl, networkBandwidth, throttledStartLoad, checkAndPreload, isVideoReady]);
 
   // Player state
   const [isPlaying, setIsPlaying] = useState(false);
