@@ -313,7 +313,7 @@ export default function HLSVideoPlayer({
 
   // checkAndPreload function - moved to component level to be accessible from main handlers
   // Works entirely with segments for HLS streaming (not seconds)
-  // 
+  //
   // CONFLICT PREVENTION: This function has multiple guards to prevent duplicate processing:
   // 1. isCheckingPreloadRef: Prevents concurrent execution when multiple handlers fire simultaneously
   // 2. HLS loading check: Prevents duplicate segment requests when HLS is already loading
@@ -653,6 +653,8 @@ export default function HLSVideoPlayer({
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastScrubTimeRef = useRef<number>(0);
   const isScrubbingRef = useRef<boolean>(false);
+  // Track pending requestAnimationFrame for seek drag to prevent duplicate seeking events
+  const seekDragRafRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressBarRef = useRef<HTMLDivElement>(null);
   const volumeBarRef = useRef<HTMLDivElement>(null);
@@ -916,13 +918,21 @@ export default function HLSVideoPlayer({
       const timeSinceLastScrub = now - lastScrubTimeRef.current;
       const minScrubInterval = 16; // ~60fps (16.67ms per frame)
 
+      // Cancel any pending requestAnimationFrame to prevent duplicate seeking events
+      // This ensures only the latest seek position is applied
+      if (seekDragRafRef.current !== null) {
+        cancelAnimationFrame(seekDragRafRef.current);
+        seekDragRafRef.current = null;
+      }
+
       if (timeSinceLastScrub >= minScrubInterval) {
         lastScrubTimeRef.current = now;
         // Update video time for smooth scrubbing
         video.currentTime = newTime;
       } else {
         // Schedule update for next frame
-        requestAnimationFrame(() => {
+        seekDragRafRef.current = requestAnimationFrame(() => {
+          seekDragRafRef.current = null; // Clear ref when callback fires
           const video = videoRef.current;
           if (video && isScrubbing) {
             video.currentTime = newTime;
@@ -1212,6 +1222,11 @@ export default function HLSVideoPlayer({
               setIsDragging(false);
               setIsScrubbing(false);
               isScrubbingRef.current = false;
+              // Cancel any pending seek drag animation frame
+              if (seekDragRafRef.current !== null) {
+                cancelAnimationFrame(seekDragRafRef.current);
+                seekDragRafRef.current = null;
+              }
               setSeekPreviewTime(null);
             }}
             onMouseDown={(e) => {
@@ -1236,6 +1251,11 @@ export default function HLSVideoPlayer({
               setIsDragging(false);
               setIsScrubbing(false);
               isScrubbingRef.current = false;
+              // Cancel any pending seek drag animation frame
+              if (seekDragRafRef.current !== null) {
+                cancelAnimationFrame(seekDragRafRef.current);
+                seekDragRafRef.current = null;
+              }
               setSeekPreviewTime(null);
             }}
             onMouseLeave={(e) => {
@@ -1246,6 +1266,11 @@ export default function HLSVideoPlayer({
               setIsDragging(false);
               setIsScrubbing(false);
               isScrubbingRef.current = false;
+              // Cancel any pending seek drag animation frame
+              if (seekDragRafRef.current !== null) {
+                cancelAnimationFrame(seekDragRafRef.current);
+                seekDragRafRef.current = null;
+              }
               setSeekPreviewTime(null);
             }}
           >
