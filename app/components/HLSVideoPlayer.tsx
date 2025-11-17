@@ -224,6 +224,20 @@ export default function HLSVideoPlayer({
   const rafIdRef = useRef<number | null>(null);
   const pendingTimeUpdateRef = useRef<{ currentTime: number; duration: number; buffered: number } | null>(null);
 
+  // Helper function to get buffered end time (eliminates duplication)
+  const getBufferedEnd = useCallback((video: HTMLVideoElement): number => {
+    const buffered = video.buffered;
+    if (buffered.length > 0) {
+      return buffered.end(buffered.length - 1);
+    }
+    return 0;
+  }, []);
+
+  // Helper function to check if video has enough data (eliminates duplication)
+  const isVideoReady = useCallback((video: HTMLVideoElement): boolean => {
+    return video.readyState >= 2; // HAVE_CURRENT_DATA or higher
+  }, []);
+
   // Helper function to save position before error recovery (eliminates duplication)
   const savePositionForRecovery = useCallback((video: HTMLVideoElement | null) => {
     if (video && !isNaN(video.currentTime) && video.currentTime > 0) {
@@ -298,14 +312,7 @@ export default function HLSVideoPlayer({
     if (!video || !hls) return;
 
     const currentTime = video.currentTime;
-
-    const buffered = video.buffered;
-    let bufferedEnd = 0;
-
-    if (buffered.length > 0) {
-      bufferedEnd = buffered.end(buffered.length - 1);
-    }
-
+    const bufferedEnd = getBufferedEnd(video);
     const bufferAhead = bufferedEnd - currentTime;
     const bufferHealth = bufferAhead; // Current buffer health in seconds
 
@@ -338,7 +345,7 @@ export default function HLSVideoPlayer({
       // Trigger HLS to load more segments
       throttledStartLoad();
     }
-  }, [networkBandwidth, throttledStartLoad]);
+  }, [networkBandwidth, throttledStartLoad, getBufferedEnd, isVideoReady]);
 
   // Throttled wrapper for checkAndPreload to prevent excessive calls
   const throttledCheckAndPreload = useCallback(() => {
@@ -414,7 +421,7 @@ export default function HLSVideoPlayer({
           if (video) {
             // Wait for video to be ready before restoring position
             const restorePosition = () => {
-              if (video.readyState >= 2) {
+              if (isVideoReady(video)) {
                 // Video has enough data to seek
                 video.currentTime = savedPositionRef.current;
                 isRecoveringRef.current = false;
@@ -425,7 +432,7 @@ export default function HLSVideoPlayer({
               }
             };
             // Try to restore immediately, or wait if video not ready
-            if (video.readyState >= 2) {
+            if (isVideoReady(video)) {
               restorePosition();
             } else {
               video.addEventListener('loadeddata', restorePosition, { once: true });
@@ -520,7 +527,7 @@ export default function HLSVideoPlayer({
               if (!video) return;
 
               // Check if video has enough data to play
-              if (video.readyState >= 2) {
+              if (isVideoReady(video)) {
                 // Video has enough data, try to play
                 if (video.paused) {
                   playVideoWithPromise(
@@ -532,7 +539,7 @@ export default function HLSVideoPlayer({
               } else {
                 // Video not ready yet, wait for canplay event
                 const onCanPlay = () => {
-                  video.removeEventListener('canplay', onCanPlay);
+                  // { once: true } automatically removes listener, no need to manually remove
                   if (video.paused) {
                     playVideoWithPromise(
                       video,
@@ -543,8 +550,8 @@ export default function HLSVideoPlayer({
                 };
                 video.addEventListener('canplay', onCanPlay, { once: true });
                 // Fallback timeout in case canplay doesn't fire
+                // Note: If canplay fires, listener is auto-removed by { once: true }
                 setTimeout(() => {
-                  video.removeEventListener('canplay', onCanPlay);
                   if (video.paused && wasPlaying) {
                     resumePlayback();
                   }
@@ -567,6 +574,10 @@ export default function HLSVideoPlayer({
         video.removeEventListener('seeking', handleSeeking);
         video.removeEventListener('seeked', handleSeeked);
         hls.destroy();
+        // Set ref to null to prevent duplicate destroy in outer cleanup
+        if (hlsRef.current === hls) {
+          hlsRef.current = null;
+        }
       };
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       // Native HLS support (Safari)
@@ -577,11 +588,13 @@ export default function HLSVideoPlayer({
     }
 
     return () => {
+      // Only destroy if ref still points to an HLS instance (not already destroyed by inner cleanup)
       if (hlsRef.current) {
         hlsRef.current.destroy();
+        hlsRef.current = null;
       }
     };
-  }, [hlsUrl, networkBandwidth]);
+  }, [hlsUrl, networkBandwidth, savePositionForRecovery, throttledStartLoad, checkAndPreload, isVideoReady]);
 
   // Player state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -635,11 +648,8 @@ export default function HLSVideoPlayer({
       // Store pending update data instead of calling setState immediately
       const currentTime = video.currentTime;
       const duration = video.duration || 0;
-      let buffered = 0;
-      if (video.buffered.length > 0) {
-        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-        buffered = (bufferedEnd / duration) * 100;
-      }
+      const bufferedEnd = getBufferedEnd(video);
+      const buffered = duration > 0 ? (bufferedEnd / duration) * 100 : 0;
 
       pendingTimeUpdateRef.current = { currentTime, duration, buffered };
 
@@ -699,7 +709,7 @@ export default function HLSVideoPlayer({
         rafIdRef.current = null;
       }
     };
-  }, [resetControlsTimeout, checkAndPreload, throttledCheckAndPreload]);
+  }, [resetControlsTimeout, checkAndPreload, throttledCheckAndPreload, getBufferedEnd]);
 
   // Play/Pause toggle
   const togglePlayPause = useCallback(() => {
