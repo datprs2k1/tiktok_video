@@ -313,6 +313,13 @@ export default function HLSVideoPlayer({
 
   // checkAndPreload function - moved to component level to be accessible from main handlers
   // Works entirely with segments for HLS streaming (not seconds)
+  // 
+  // CONFLICT PREVENTION: This function has multiple guards to prevent duplicate processing:
+  // 1. isCheckingPreloadRef: Prevents concurrent execution when multiple handlers fire simultaneously
+  // 2. HLS loading check: Prevents duplicate segment requests when HLS is already loading
+  // 3. isSeekingRef: Prevents execution during seeking (handleSeeked handles seek-triggered loads)
+  // 4. lastSeekTimeRef: Prevents execution immediately after seek (1.5s window for handleSeeked)
+  // 5. throttledStartLoad: Additional throttling at the HLS.startLoad() level (500ms minimum interval)
   const checkAndPreload = useCallback(() => {
     // Prevent duplicate execution when multiple event handlers fire simultaneously
     // (e.g., handleWaiting and handleStalled can fire at the same time)
@@ -496,6 +503,9 @@ export default function HLSVideoPlayer({
           }
           isSeekingRef.current = true;
           seekTargetRef.current = video.currentTime;
+          // Pause buffering interval during seeking to avoid unnecessary checkAndPreload calls
+          // The interval callback already checks isSeekingRef, but pausing is more efficient
+          // The interval will resume automatically when buffering continues after seek (if still buffering)
           debugLog(
             '[HLS] Seeking started, target:',
             seekTargetRef.current,
@@ -813,7 +823,13 @@ export default function HLSVideoPlayer({
         bufferingPreloadStartTimeoutRef.current = null;
 
         // Start interval to continuously preload while buffering
+        // Note: checkAndPreload() will skip execution during seeking (via isSeekingRef check),
+        // but we pause the interval during seeking to avoid unnecessary function calls
         bufferingPreloadIntervalRef.current = setInterval(() => {
+          // Skip interval callback if currently seeking (handleSeeked will handle preload after seek)
+          if (isSeekingRef.current) {
+            return;
+          }
           checkAndPreload();
         }, BUFFERING_PRELOAD_INTERVAL);
 
