@@ -304,57 +304,68 @@ export default function HLSVideoPlayer({
   // Throttled buffer checking - moved to component level for accessibility
   const lastCheckTimeRef = useRef<number>(0);
   const CHECK_INTERVAL = 1000; // Check every 1 second (reduced from 2s for faster response to buffer depletion)
+  // Flag to prevent duplicate execution of checkAndPreload when multiple event handlers fire simultaneously
+  const isCheckingPreloadRef = useRef<boolean>(false);
 
   // checkAndPreload function - moved to component level to be accessible from main handlers
   // Works entirely with segments for HLS streaming (not seconds)
   const checkAndPreload = useCallback(() => {
-    const video = videoRef.current;
-    const hls = hlsRef.current;
-    if (!video || !hls) return;
-
-    // Early exit: Check if HLS is already loading to prevent duplicate preload calls
-    // This check happens before any calculations to avoid unnecessary work
-    if ('loading' in hls && (hls as HLSWithLoading).loading) {
-      return; // Already loading, skip to prevent duplicate segment requests
+    // Prevent duplicate execution when multiple event handlers fire simultaneously
+    // (e.g., handleWaiting and handleStalled can fire at the same time)
+    if (isCheckingPreloadRef.current) {
+      return; // Already checking, skip to prevent duplicate calculations
     }
 
-    // Skip normal prefetch during seeking to prevent duplicates with handleSeeked()
-    if (isSeekingRef.current) {
-      return; // handleSeeked() is the sole handler for seeking-triggered loads
-    }
+    try {
+      isCheckingPreloadRef.current = true;
 
-    // Skip normal prefetch if seek completed recently (within last 1.5 seconds)
-    // This prevents checkAndPreload() from triggering load right after seek,
-    // giving handleSeeked() exclusive control during immediate post-seek period
-    const timeSinceSeek = Date.now() - lastSeekTimeRef.current;
-    if (timeSinceSeek < 1500) {
-      return; // Skip normal prefetch if seek completed within last 1.5 seconds
-    }
+      const video = videoRef.current;
+      const hls = hlsRef.current;
+      if (!video || !hls) return;
 
-    // Normal prefetch logic (only runs when not seeking and not already loading)
-    // Segment duration: 10 seconds per segment (fixed)
-    const SEGMENT_DURATION = 10;
-    const currentTime = video.currentTime;
-    const bufferedEnd = getBufferedEnd(video);
-    const bufferAhead = bufferedEnd - currentTime;
+      // Early exit: Check if HLS is already loading to prevent duplicate preload calls
+      // This check happens before any calculations to avoid unnecessary work
+      if ('loading' in hls && (hls as HLSWithLoading).loading) {
+        return; // Already loading, skip to prevent duplicate segment requests
+      }
 
-    // Calculate buffered segments directly (segment-based calculation)
-    const bufferedSegments = Math.floor(bufferAhead / SEGMENT_DURATION);
-    const minSegments = 5; // Minimum 5 segments required (YouTube-like: 4-6 segments)
+      // Skip normal prefetch during seeking to prevent duplicates with handleSeeked()
+      if (isSeekingRef.current) {
+        return; // handleSeeked() is the sole handler for seeking-triggered loads
+      }
 
-    // Calculate adaptive prefetch segments based on bandwidth and buffer health (both in segments)
-    const prefetchSegments = calculateAdaptivePrefetchSegments(
-      networkBandwidth,
-      bufferedSegments,
-      SEGMENT_DURATION
-    );
+      // Skip normal prefetch if seek completed recently (within last 1.5 seconds)
+      // This prevents checkAndPreload() from triggering load right after seek,
+      // giving handleSeeked() exclusive control during immediate post-seek period
+      const timeSinceSeek = Date.now() - lastSeekTimeRef.current;
+      if (timeSinceSeek < 1500) {
+        return; // Skip normal prefetch if seek completed within last 1.5 seconds
+      }
 
-    // Preload if buffer is less than minimum segments OR less than adaptive prefetch segments
-    // All comparisons are segment-based for consistency with HLS streaming
-    // YouTube-like: preload even when paused
-    if (bufferedSegments < minSegments || bufferedSegments < prefetchSegments) {
-      // Trigger HLS to load more segments
-      throttledStartLoad();
+      // Normal prefetch logic (only runs when not seeking and not already loading)
+      // Segment duration: 10 seconds per segment (fixed)
+      const SEGMENT_DURATION = 10;
+      const currentTime = video.currentTime;
+      const bufferedEnd = getBufferedEnd(video);
+      const bufferAhead = bufferedEnd - currentTime;
+
+      // Calculate buffered segments directly (segment-based calculation)
+      const bufferedSegments = Math.floor(bufferAhead / SEGMENT_DURATION);
+      const minSegments = 5; // Minimum 5 segments required (YouTube-like: 4-6 segments)
+
+      // Calculate adaptive prefetch segments based on bandwidth and buffer health (both in segments)
+      const prefetchSegments = calculateAdaptivePrefetchSegments(networkBandwidth, bufferedSegments, SEGMENT_DURATION);
+
+      // Preload if buffer is less than minimum segments OR less than adaptive prefetch segments
+      // All comparisons are segment-based for consistency with HLS streaming
+      // YouTube-like: preload even when paused
+      if (bufferedSegments < minSegments || bufferedSegments < prefetchSegments) {
+        // Trigger HLS to load more segments
+        throttledStartLoad();
+      }
+    } finally {
+      // Always reset flag, even if function returns early or throws
+      isCheckingPreloadRef.current = false;
     }
   }, [networkBandwidth, throttledStartLoad, getBufferedEnd]);
 
