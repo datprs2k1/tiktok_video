@@ -84,9 +84,13 @@ function calculateAdaptivePrefetchDistance(bandwidth: number | null, bufferHealt
     baseDistance = 30;
   }
 
-  // Adjust based on buffer health: if buffer is low, increase prefetch distance
-  if (bufferHealth < 5) {
-    baseDistance *= 1.2; // Increase by 20% if buffer is low
+  // Adjust based on buffer health: if buffer is low, increase prefetch distance more aggressively
+  if (bufferHealth < 3) {
+    // Very low buffer: double the prefetch distance for aggressive buffering
+    baseDistance *= 2.0;
+  } else if (bufferHealth < 5) {
+    // Low buffer: increase by 50% (improved from 20% for faster recovery)
+    baseDistance *= 1.5;
   }
 
   return Math.round(baseDistance);
@@ -294,7 +298,7 @@ export default function HLSVideoPlayer({
 
   // Throttled buffer checking - moved to component level for accessibility
   const lastCheckTimeRef = useRef<number>(0);
-  const CHECK_INTERVAL = 2000; // Check every 2 seconds (throttled)
+  const CHECK_INTERVAL = 1000; // Check every 1 second (reduced from 2s for faster response to buffer depletion)
 
   // checkAndPreload function - moved to component level to be accessible from main handlers
   const checkAndPreload = useCallback(() => {
@@ -356,11 +360,14 @@ export default function HLSVideoPlayer({
         enableWorker: true, // Enable Web Worker for better performance
         lowLatencyMode: false,
         // Adaptive Bitrate Streaming (ABR) configuration
-        maxBufferLength: 60, // Maximum buffer length in seconds (YouTube-like)
-        maxMaxBufferLength: 60, // Maximum max buffer length in seconds
+        maxBufferLength: 120, // Maximum buffer length in seconds (increased to accommodate preload requirements)
+        maxMaxBufferLength: 120, // Maximum max buffer length in seconds (increased to accommodate preload requirements)
+        maxBufferSize: 60 * 1024 * 1024, // Maximum buffer size in bytes (60MB) - prevents memory issues
+        maxBufferHole: 0.5, // Maximum gap tolerance in seconds - allows small gaps without stalling
+        minAutoBitrate: 100000, // Minimum bitrate for auto quality (100kbps) - quality floor
         startLevel: -1, // Auto-select initial quality level (-1 = auto)
         capLevelToPlayerSize: true, // Cap quality to player size
-        abrEwmaDefaultEstimate: networkBandwidth || 500000, // Use detected bandwidth or default 500kbps
+        abrEwmaDefaultEstimate: networkBandwidth || 1000000, // Use detected bandwidth or default 1Mbps (improved from 500kbps)
         abrBandWidthFactor: 0.95, // Bandwidth factor for ABR
         abrBandWidthUpFactor: 0.7, // Bandwidth up factor for ABR
       });
@@ -692,12 +699,31 @@ export default function HLSVideoPlayer({
       // Video is waiting for data (buffering)
       setIsBuffering(true);
       debugLog('[Video] Buffering...');
+      // Trigger immediate aggressive preload to recover from buffer depletion
+      // Bypass throttle to start loading immediately
+      checkAndPreload();
+      throttledStartLoad();
     };
 
     const handlePlaying = () => {
       // Video has enough data and is playing
       setIsBuffering(false);
       debugLog('[Video] Playing');
+    };
+
+    const handleStalled = () => {
+      // Video element has stalled (stopped downloading)
+      setIsBuffering(true);
+      debugLog('[Video] Stalled - triggering immediate preload');
+      // Trigger immediate aggressive preload to recover from stall
+      checkAndPreload();
+      throttledStartLoad();
+    };
+
+    const handleProgress = () => {
+      // Progress event fires during buffering - use for proactive buffer management
+      // Check buffer health and trigger preload if needed (throttled to avoid excessive calls)
+      throttledCheckAndPreload();
     };
 
     video.addEventListener('play', handlePlay);
@@ -707,6 +733,8 @@ export default function HLSVideoPlayer({
     video.addEventListener('volumechange', handleVolumeChange);
     video.addEventListener('waiting', handleWaiting);
     video.addEventListener('playing', handlePlaying);
+    video.addEventListener('stalled', handleStalled);
+    video.addEventListener('progress', handleProgress);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
 
     return () => {
@@ -717,6 +745,8 @@ export default function HLSVideoPlayer({
       video.removeEventListener('volumechange', handleVolumeChange);
       video.removeEventListener('waiting', handleWaiting);
       video.removeEventListener('playing', handlePlaying);
+      video.removeEventListener('stalled', handleStalled);
+      video.removeEventListener('progress', handleProgress);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       // Cleanup: cancel pending animation frame
       if (rafIdRef.current !== null) {
@@ -724,7 +754,7 @@ export default function HLSVideoPlayer({
         rafIdRef.current = null;
       }
     };
-  }, [resetControlsTimeout, checkAndPreload, throttledCheckAndPreload, getBufferedEnd]);
+  }, [resetControlsTimeout, checkAndPreload, throttledCheckAndPreload, throttledStartLoad, getBufferedEnd]);
 
   // Play/Pause toggle
   const togglePlayPause = useCallback(() => {
