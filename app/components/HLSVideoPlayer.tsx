@@ -228,6 +228,8 @@ export default function HLSVideoPlayer({
   // Refs for tracking timeouts to enable cleanup
   const setupProgressiveLoadingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const resumePlaybackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Track pending requestAnimationFrame for resume playback to prevent duplicate play calls
+  const resumePlaybackRafRef = useRef<number | null>(null);
 
   // Refs for batching timeupdate state updates with requestAnimationFrame
   const rafIdRef = useRef<number | null>(null);
@@ -496,6 +498,11 @@ export default function HLSVideoPlayer({
           if (pendingPlayPromiseRef.current) {
             pendingPlayPromiseRef.current = null;
           }
+          // Cancel any pending resume playback animation frame
+          if (resumePlaybackRafRef.current !== null) {
+            cancelAnimationFrame(resumePlaybackRafRef.current);
+            resumePlaybackRafRef.current = null;
+          }
           // Pause video during seeking (will resume in handleSeeked if was playing)
           // BUT: Don't pause when scrubbing - allow smooth scrubbing to work
           if (!video.paused && !isScrubbingRef.current) {
@@ -586,7 +593,12 @@ export default function HLSVideoPlayer({
             };
 
             // Use requestAnimationFrame for better timing
-            requestAnimationFrame(() => {
+            // Cancel any existing RAF before scheduling new one to prevent duplicate play calls
+            if (resumePlaybackRafRef.current !== null) {
+              cancelAnimationFrame(resumePlaybackRafRef.current);
+            }
+            resumePlaybackRafRef.current = requestAnimationFrame(() => {
+              resumePlaybackRafRef.current = null; // Clear ref when callback fires
               resumePlayback();
             });
           }
@@ -626,6 +638,11 @@ export default function HLSVideoPlayer({
       if (resumePlaybackTimeoutRef.current) {
         clearTimeout(resumePlaybackTimeoutRef.current);
         resumePlaybackTimeoutRef.current = null;
+      }
+      // Cancel any pending resume playback animation frame
+      if (resumePlaybackRafRef.current !== null) {
+        cancelAnimationFrame(resumePlaybackRafRef.current);
+        resumePlaybackRafRef.current = null;
       }
       // Only destroy if ref still points to an HLS instance (not already destroyed by inner cleanup)
       if (hlsRef.current) {
