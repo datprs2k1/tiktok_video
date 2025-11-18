@@ -619,12 +619,12 @@ export default function HLSVideoPlayer({
     const handleLoadedMetadata = () => {
       setDuration(video.duration || 0);
       setVolume(video.volume);
-      setIsMuted(video.muted);
+      setIsMuted(video.muted || video.volume === 0);
     };
 
     const handleVolumeChange = () => {
       setVolume(video.volume);
-      setIsMuted(video.muted);
+      setIsMuted(video.muted || video.volume === 0);
     };
 
     const handleFullscreenChange = () => {
@@ -808,7 +808,7 @@ export default function HLSVideoPlayer({
     const video = videoRef.current;
     if (!video) return;
     video.muted = !video.muted;
-    setIsMuted(video.muted);
+    setIsMuted(video.muted || video.volume === 0);
     resetControlsTimeout();
   }, []);
 
