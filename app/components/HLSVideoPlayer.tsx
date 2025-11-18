@@ -268,6 +268,31 @@ export default function HLSVideoPlayer({
     playStateExplicitlySetRef.current = true; // Mark as explicitly set by manual seek
   }, []);
 
+  // Helper function to clear and set error message timeout (eliminates duplication)
+  const clearAndSetErrorTimeout = useCallback(() => {
+    if (errorMessageTimeoutRef.current) {
+      clearTimeout(errorMessageTimeoutRef.current);
+    }
+    errorMessageTimeoutRef.current = setTimeout(() => {
+      errorMessageTimeoutRef.current = null;
+      setErrorMessage(null);
+    }, 5000);
+  }, []);
+
+  // Helper function to cancel seek drag RAF (eliminates duplication)
+  const cancelSeekDragRaf = useCallback(() => {
+    if (seekDragRafRef.current !== null) {
+      cancelAnimationFrame(seekDragRafRef.current);
+      seekDragRafRef.current = null;
+    }
+  }, []);
+
+  // Helper function to set scrubbing state (ensures state and ref stay in sync)
+  const setScrubbingState = useCallback((value: boolean) => {
+    setIsScrubbing(value);
+    isScrubbingRef.current = value;
+  }, []);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -292,13 +317,7 @@ export default function HLSVideoPlayer({
               setErrorMessage('Lỗi kết nối mạng. Đang thử kết nối lại...');
               throttledStartLoad();
               // Clear error message after recovery attempt
-              if (errorMessageTimeoutRef.current) {
-                clearTimeout(errorMessageTimeoutRef.current);
-              }
-              errorMessageTimeoutRef.current = setTimeout(() => {
-                errorMessageTimeoutRef.current = null;
-                setErrorMessage(null);
-              }, 5000);
+              clearAndSetErrorTimeout();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
               debugError('[HLS] Fatal media error:', data.details);
@@ -306,13 +325,7 @@ export default function HLSVideoPlayer({
               setErrorMessage('Lỗi phát video. Đang thử khôi phục...');
               hls.recoverMediaError();
               // Clear error message after recovery attempt
-              if (errorMessageTimeoutRef.current) {
-                clearTimeout(errorMessageTimeoutRef.current);
-              }
-              errorMessageTimeoutRef.current = setTimeout(() => {
-                errorMessageTimeoutRef.current = null;
-                setErrorMessage(null);
-              }, 5000);
+              clearAndSetErrorTimeout();
               break;
             default:
               debugError('[HLS] Fatal error:', data.type, data.details);
@@ -717,6 +730,12 @@ export default function HLSVideoPlayer({
       const progressBar = progressBarRef.current;
       if (!video || !progressBar) return;
 
+      // Ensure play state is saved before seeking (defensive check in case handleSeekClick didn't run)
+      // This ensures consistent behavior between click and drag seeks
+      if (!playStateExplicitlySetRef.current) {
+        savePlayStateBeforeSeek(video);
+      }
+
       const percent = calculatePercentFromEvent(progressBar, e);
       const newTime = percent * duration;
 
@@ -997,8 +1016,7 @@ export default function HLSVideoPlayer({
             onClick={handleSeekClick}
             onTouchStart={(e) => {
               setIsDragging(true);
-              setIsScrubbing(true);
-              isScrubbingRef.current = true;
+              setScrubbingState(true);
               lastScrubTimeRef.current = performance.now();
               handleSeekClick(e);
             }}
@@ -1015,19 +1033,14 @@ export default function HLSVideoPlayer({
                 handleSeekClick(e);
               }
               setIsDragging(false);
-              setIsScrubbing(false);
-              isScrubbingRef.current = false;
+              setScrubbingState(false);
               // Cancel any pending seek drag animation frame
-              if (seekDragRafRef.current !== null) {
-                cancelAnimationFrame(seekDragRafRef.current);
-                seekDragRafRef.current = null;
-              }
+              cancelSeekDragRaf();
               setSeekPreviewTime(null);
             }}
             onMouseDown={(e) => {
               setIsDragging(true);
-              setIsScrubbing(true);
-              isScrubbingRef.current = true;
+              setScrubbingState(true);
               lastScrubTimeRef.current = performance.now();
               handleSeekClick(e);
             }}
@@ -1044,13 +1057,9 @@ export default function HLSVideoPlayer({
                 handleSeekClick(e);
               }
               setIsDragging(false);
-              setIsScrubbing(false);
-              isScrubbingRef.current = false;
+              setScrubbingState(false);
               // Cancel any pending seek drag animation frame
-              if (seekDragRafRef.current !== null) {
-                cancelAnimationFrame(seekDragRafRef.current);
-                seekDragRafRef.current = null;
-              }
+              cancelSeekDragRaf();
               setSeekPreviewTime(null);
             }}
             onMouseLeave={(e) => {
@@ -1059,13 +1068,9 @@ export default function HLSVideoPlayer({
                 handleSeekClick(e);
               }
               setIsDragging(false);
-              setIsScrubbing(false);
-              isScrubbingRef.current = false;
+              setScrubbingState(false);
               // Cancel any pending seek drag animation frame
-              if (seekDragRafRef.current !== null) {
-                cancelAnimationFrame(seekDragRafRef.current);
-                seekDragRafRef.current = null;
-              }
+              cancelSeekDragRaf();
               setSeekPreviewTime(null);
             }}
           >
