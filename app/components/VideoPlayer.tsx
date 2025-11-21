@@ -29,10 +29,10 @@ export default function VideoPlayer({ src = 'http://127.0.0.1:8080/playlist.m3u8
         maxBufferHole: 0.5, // Maximum buffer hole tolerance
         // Low latency specific settings
         liveSyncDurationCount: 3, // Number of segments to keep in sync
-        liveMaxLatencyDurationCount: 5, // Maximum latency segments
+        liveMaxLatencyDurationCount: 10, // Maximum latency segments (increased from 5 to prevent rebuffering)
         // ABR (Adaptive Bitrate) settings
         capLevelToPlayerSize: true, // Auto-adjust quality to player size
-        abrEwmaDefaultEstimate: 500000, // Default bandwidth estimate (500kbps)
+        abrEwmaDefaultEstimate: 1500000, // Default bandwidth estimate (1.5 Mbps, increased for better streaming)
         abrBandWidthFactor: 0.95, // Conservative bandwidth factor
         abrBandWidthUpFactor: 0.7, // Conservative bandwidth up factor
         // Error recovery
@@ -41,6 +41,9 @@ export default function VideoPlayer({ src = 'http://127.0.0.1:8080/playlist.m3u8
         // Timeouts (optimized for low latency)
         manifestLoadingTimeOut: 5000, // 5s (reduced from default 10s)
         fragLoadingTimeOut: 10000, // 10s (reduced from default 20s)
+        levelLoadingTimeOut: 10000, // 10s timeout for level loading
+        // Buffer monitoring
+        highBufferWatchdogPeriod: 2000, // 2s period for monitoring high buffer levels
       });
 
       hlsRef.current = hls;
