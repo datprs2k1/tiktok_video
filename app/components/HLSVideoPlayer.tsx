@@ -66,252 +66,6 @@ interface HLSWithLoading extends Hls {
   loading?: boolean;
 }
 
-// HLS.js Loader interface types
-interface LoaderContext {
-  url: string;
-  rangeStart?: number;
-  rangeEnd?: number;
-  responseType: string;
-}
-
-interface LoaderConfig {
-  timeout?: number;
-  retry?: number;
-  retryDelay?: number;
-  maxRetry?: number;
-  maxRetryDelay?: number;
-}
-
-interface LoaderCallbacks {
-  onSuccess: (response: any, stats: any, context: LoaderContext) => void;
-  onError: (error: any, context: LoaderContext) => void;
-  onTimeout?: (stats: any, context: LoaderContext) => void;
-  onProgress?: (stats: any, context: LoaderContext, data: ArrayBuffer) => void;
-}
-
-// Custom loader for handling partial data with backend streaming
-class PartialDataLoader {
-  private abortController: AbortController | null = null;
-
-  load(context: LoaderContext, config: LoaderConfig, callbacks: LoaderCallbacks): void {
-    this.abortController = new AbortController();
-    const { url, rangeStart, rangeEnd } = context;
-
-    // Build request headers
-    const headers: HeadersInit = {};
-    if (rangeStart !== undefined && rangeEnd !== undefined) {
-      headers['Range'] = `bytes=${rangeStart}-${rangeEnd}`;
-    }
-
-    // Make fetch request
-    fetch(url, {
-      method: 'GET',
-      headers,
-      signal: this.abortController.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok && response.status !== 206) {
-          // 206 is Partial Content (expected for Range requests)
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        // Get expected size from Content-Length header
-        const contentLength = response.headers.get('Content-Length');
-        const expectedSize = contentLength ? parseInt(contentLength, 10) : null;
-        const contentRange = response.headers.get('Content-Range');
-        
-        // Extract total size from Content-Range if available (format: "bytes start-end/total")
-        let totalSize = expectedSize;
-        if (contentRange) {
-          const match = contentRange.match(/\/(\d+)/);
-          if (match) {
-            totalSize = parseInt(match[1], 10);
-          }
-        }
-
-        // Read response as array buffer
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('Response body is not readable');
-        }
-
-        const chunks: Uint8Array[] = [];
-        let receivedSize = 0;
-        let done = false;
-
-        try {
-          while (!done) {
-            const { value, done: readerDone } = await reader.read();
-            done = readerDone;
-
-            if (value) {
-              chunks.push(value);
-              receivedSize += value.length;
-
-              // Report progress if callback available
-              if (callbacks.onProgress) {
-                const combinedData = this.combineChunks(chunks);
-                callbacks.onProgress(
-                  {
-                    trequest: performance.now(),
-                    tfirst: performance.now(),
-                    tload: performance.now(),
-                    loaded: receivedSize,
-                    total: totalSize || receivedSize,
-                  },
-                  context,
-                  combinedData.buffer
-                );
-              }
-            }
-          }
-        } catch (error: any) {
-          // Handle Unexpected EOF or network errors
-          const errorMessage = error?.message || String(error);
-          const isUnexpectedEOF = errorMessage.includes('Unexpected EOF') || 
-                                  errorMessage.includes('network error') ||
-                                  errorMessage.includes('aborted');
-
-          if (isUnexpectedEOF && receivedSize > 0) {
-            // Check if partial data is sufficient
-            const isSufficient = this.isPartialDataSufficient(
-              receivedSize,
-              totalSize,
-              expectedSize
-            );
-
-            if (isSufficient) {
-              debugLog('[PartialDataLoader] Partial data sufficient, accepting:', {
-                received: receivedSize,
-                expected: expectedSize,
-                total: totalSize,
-              });
-
-              // Return partial data as success
-              const combinedData = this.combineChunks(chunks);
-              const stats = {
-                trequest: performance.now(),
-                tfirst: performance.now(),
-                tload: performance.now(),
-                loaded: receivedSize,
-                total: totalSize || receivedSize,
-              };
-
-              callbacks.onSuccess(
-                {
-                  url: response.url,
-                  data: combinedData.buffer, // Return ArrayBuffer for HLS.js
-                },
-                stats,
-                context
-              );
-              return;
-            } else {
-              debugWarn('[PartialDataLoader] Partial data insufficient:', {
-                received: receivedSize,
-                expected: expectedSize,
-                total: totalSize,
-              });
-            }
-          }
-
-          // If not sufficient or not Unexpected EOF, propagate error
-          throw error;
-        }
-
-        // Successfully read all data
-        const combinedData = this.combineChunks(chunks);
-        const stats = {
-          trequest: performance.now(),
-          tfirst: performance.now(),
-          tload: performance.now(),
-          loaded: receivedSize,
-          total: totalSize || receivedSize,
-        };
-
-        callbacks.onSuccess(
-          {
-            url: response.url,
-            data: combinedData.buffer, // Return ArrayBuffer for HLS.js
-          },
-          stats,
-          context
-        );
-      })
-      .catch((error: any) => {
-        if (error.name === 'AbortError') {
-          debugLog('[PartialDataLoader] Request aborted');
-          return;
-        }
-
-        debugError('[PartialDataLoader] Load error:', error);
-        callbacks.onError(
-          {
-            code: error.status || -1,
-            text: error.message || 'Network error',
-          },
-          context
-        );
-      });
-  }
-
-  abort(): void {
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
-    }
-  }
-
-  destroy(): void {
-    this.abort();
-  }
-
-  // Check if partial data is sufficient (>= 90% or >= 10KB)
-  private isPartialDataSufficient(
-    receivedSize: number,
-    totalSize: number | null,
-    expectedSize: number | null
-  ): boolean {
-    const MIN_SIZE_BYTES = 10 * 1024; // 10KB
-    const MIN_PERCENTAGE = 0.9; // 90%
-
-    // Check minimum size requirement (>= 10KB)
-    if (receivedSize >= MIN_SIZE_BYTES) {
-      return true;
-    }
-
-    // Check percentage requirement (>= 90%)
-    const sizeToCheck = totalSize || expectedSize;
-    if (sizeToCheck && receivedSize >= sizeToCheck * MIN_PERCENTAGE) {
-      return true;
-    }
-
-    return false;
-  }
-
-  // Combine Uint8Array chunks into single ArrayBuffer
-  private combineChunks(chunks: Uint8Array[]): Uint8Array {
-    if (chunks.length === 0) {
-      return new Uint8Array(0);
-    }
-
-    if (chunks.length === 1) {
-      return chunks[0];
-    }
-
-    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const combined = new Uint8Array(totalLength);
-    let offset = 0;
-
-    for (const chunk of chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    return combined;
-  }
-}
-
 // Network bandwidth detection utility
 function useNetworkBandwidth() {
   // Use initial state instead of setState in effect to avoid cascading renders
@@ -356,7 +110,7 @@ function useNetworkBandwidth() {
 }
 
 export default function HLSVideoPlayer({
-  hlsUrl = 'https://tiktok.datprs.store/playlist.m3u8',
+  hlsUrl = 'http://127.0.0.1:8080/playlist.m3u8',
   className = 'absolute inset-0 h-full w-full rounded-lg',
 }: HLSVideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -445,6 +199,10 @@ export default function HLSVideoPlayer({
   // Refs for batching timeupdate state updates with requestAnimationFrame
   const rafIdRef = useRef<number | null>(null);
   const pendingTimeUpdateRef = useRef<{ currentTime: number; duration: number; buffered: number } | null>(null);
+
+  // Preload mechanism: track last preload position to prevent duplicate preloads
+  const lastPreloadPositionRef = useRef<number>(0);
+  const PRELOAD_THRESHOLD = 1.5; // seconds - preload when gap between currentTime and bufferedEnd is less than this
 
   // Helper function to get buffered end time (eliminates duplication)
   const getBufferedEnd = useCallback((video: HTMLVideoElement): number => {
@@ -544,16 +302,11 @@ export default function HLSVideoPlayer({
     if (!video) return;
 
     if (Hls.isSupported()) {
-      // Create custom loader instance
-      const customLoader = new PartialDataLoader();
-
       const hls = new Hls({
         maxBufferSize: 0,
         backBufferLength: 2,
         enableWorker: false,
         lowLatencyMode: true,
-        // Use custom loader for handling partial data
-        loader: customLoader as any,
       });
       hlsRef.current = hls;
 
@@ -641,6 +394,8 @@ export default function HLSVideoPlayer({
           }
           isSeekingRef.current = true;
           seekTargetRef.current = video.currentTime;
+          // Reset preload tracking on seek to allow preload for new position
+          lastPreloadPositionRef.current = 0;
           debugLog(
             '[HLS] Seeking started, target:',
             seekTargetRef.current,
@@ -846,6 +601,20 @@ export default function HLSVideoPlayer({
       const duration = video.duration || 0;
       const bufferedEnd = getBufferedEnd(video);
       const buffered = duration > 0 ? (bufferedEnd / duration) * 100 : 0;
+
+      // Preload mechanism: trigger preload when near end of current segment
+      const gap = bufferedEnd - currentTime;
+      if (
+        gap < PRELOAD_THRESHOLD &&
+        currentTime > lastPreloadPositionRef.current &&
+        !video.paused &&
+        !isSeekingRef.current
+      ) {
+        // Trigger preload for next segment
+        throttledStartLoad();
+        lastPreloadPositionRef.current = currentTime;
+        debugLog('[HLS] Preload triggered, gap:', gap.toFixed(2), 'currentTime:', currentTime.toFixed(2));
+      }
 
       pendingTimeUpdateRef.current = { currentTime, duration, buffered };
 
