@@ -22,6 +22,25 @@ export default function VideoPlayer({ src = 'http://127.0.0.1:8080/playlist.m3u8
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
+        // Buffer management for low latency
+        maxBufferLength: 15, // Reduced from default 30s for lower latency
+        maxMaxBufferLength: 30, // Limit maximum buffer
+        maxBufferSize: 30 * 1000 * 1000, // 30MB (reduced from default 60MB)
+        maxBufferHole: 0.5, // Maximum buffer hole tolerance
+        // Low latency specific settings
+        liveSyncDurationCount: 3, // Number of segments to keep in sync
+        liveMaxLatencyDurationCount: 5, // Maximum latency segments
+        // ABR (Adaptive Bitrate) settings
+        capLevelToPlayerSize: true, // Auto-adjust quality to player size
+        abrEwmaDefaultEstimate: 500000, // Default bandwidth estimate (500kbps)
+        abrBandWidthFactor: 0.95, // Conservative bandwidth factor
+        abrBandWidthUpFactor: 0.7, // Conservative bandwidth up factor
+        // Error recovery
+        manifestLoadingMaxRetry: 4, // Retry manifest loading
+        fragLoadingMaxRetry: 6, // Retry fragment loading
+        // Timeouts (optimized for low latency)
+        manifestLoadingTimeOut: 5000, // 5s (reduced from default 10s)
+        fragLoadingTimeOut: 10000, // 10s (reduced from default 20s)
       });
 
       hlsRef.current = hls;
