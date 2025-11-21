@@ -2,16 +2,14 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
+import { extractTSFromData } from '../utils/segmentDecoder';
 
 interface VideoPlayerProps {
   src?: string;
   className?: string;
 }
 
-export default function VideoPlayer({ 
-  src = 'http://127.0.0.1:8080/playlist.m3u8',
-  className = ''
-}: VideoPlayerProps) {
+export default function VideoPlayer({ src = 'http://127.0.0.1:8080/playlist.m3u8', className = '' }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -69,7 +67,7 @@ export default function VideoPlayer({
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           setIsLoading(false);
           setError(null);
-          
+
           // Get quality levels
           const levels = hls.levels.map((level, index) => index);
           setQualityLevels(levels);
@@ -97,6 +95,31 @@ export default function VideoPlayer({
 
         hls.on(Hls.Events.LEVEL_SWITCHED, (event, data) => {
           setCurrentQuality(data.level);
+        });
+
+        // Decode segments that are wrapped with markers
+        hls.on(Hls.Events.FRAG_LOADED, (event, data) => {
+          if (data.payload && data.payload instanceof ArrayBuffer) {
+            try {
+              // Convert ArrayBuffer to Uint8Array for decoding
+              const segmentBytes = new Uint8Array(data.payload);
+              const decodedData = extractTSFromData(segmentBytes);
+
+              // If markers were found and data was extracted, replace the payload
+              if (decodedData !== null) {
+                // Convert decoded Uint8Array back to ArrayBuffer
+                // Create a new ArrayBuffer with the exact size of decoded data
+                const newBuffer = new ArrayBuffer(decodedData.length);
+                const newView = new Uint8Array(newBuffer);
+                newView.set(decodedData);
+                data.payload = newBuffer;
+              }
+              // If markers not found, use original payload (defensive approach)
+            } catch (error) {
+              // If decoding fails, use original payload
+              console.warn('Segment decoding failed, using original data:', error);
+            }
+          }
         });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         // Native HLS support (Safari)
@@ -203,75 +226,84 @@ export default function VideoPlayer({
   }, [resetControlsTimeout]);
 
   // Seek
-  const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
-    const video = videoRef.current;
-    const progress = progressRef.current;
-    if (!video || !progress) return;
-
-    const rect = progress.getBoundingClientRect();
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const newTime = percent * duration;
-
-    video.currentTime = newTime;
-    setCurrentTime(newTime);
-    resetControlsTimeout();
-  }, [duration, resetControlsTimeout]);
-
-  // Progress bar interaction
-  const handleProgressMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    setIsScrubbing(true);
-    handleSeek(e);
-    const video = videoRef.current;
-    if (!video) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
+  const handleSeek = useCallback(
+    (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+      const video = videoRef.current;
       const progress = progressRef.current;
-      if (!progress) return;
-      const rect = progress.getBoundingClientRect();
-      const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const newTime = percent * duration;
-      setCurrentTime(newTime);
-      
-      // Show preview tooltip
-      if (seekPreviewRef.current) {
-        seekPreviewRef.current.style.left = `${percent * 100}%`;
-        setSeekPreviewTime(newTime);
-      }
-    };
+      if (!video || !progress) return;
 
-    const handleMouseUp = (e: MouseEvent) => {
-      const progress = progressRef.current;
-      if (!progress) return;
       const rect = progress.getBoundingClientRect();
-      const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+      const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
       const newTime = percent * duration;
+
       video.currentTime = newTime;
       setCurrentTime(newTime);
-      setIsScrubbing(false);
-      setSeekPreviewTime(null);
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
+      resetControlsTimeout();
+    },
+    [duration, resetControlsTimeout]
+  );
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-  }, [duration, handleSeek]);
+  // Progress bar interaction
+  const handleProgressMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      setIsScrubbing(true);
+      handleSeek(e);
+      const video = videoRef.current;
+      if (!video) return;
+
+      const handleMouseMove = (e: MouseEvent) => {
+        const progress = progressRef.current;
+        if (!progress) return;
+        const rect = progress.getBoundingClientRect();
+        const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const newTime = percent * duration;
+        setCurrentTime(newTime);
+
+        // Show preview tooltip
+        if (seekPreviewRef.current) {
+          seekPreviewRef.current.style.left = `${percent * 100}%`;
+          setSeekPreviewTime(newTime);
+        }
+      };
+
+      const handleMouseUp = (e: MouseEvent) => {
+        const progress = progressRef.current;
+        if (!progress) return;
+        const rect = progress.getBoundingClientRect();
+        const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const newTime = percent * duration;
+        video.currentTime = newTime;
+        setCurrentTime(newTime);
+        setIsScrubbing(false);
+        setSeekPreviewTime(null);
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    },
+    [duration, handleSeek]
+  );
 
   // Progress bar hover
-  const handleProgressMouseMove = useCallback((e: React.MouseEvent) => {
-    if (isScrubbing) return;
-    const progress = progressRef.current;
-    if (!progress) return;
-    const rect = progress.getBoundingClientRect();
-    const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const previewTime = percent * duration;
-    
-    if (seekPreviewRef.current) {
-      seekPreviewRef.current.style.left = `${percent * 100}%`;
-      setSeekPreviewTime(previewTime);
-    }
-  }, [duration, isScrubbing]);
+  const handleProgressMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      if (isScrubbing) return;
+      const progress = progressRef.current;
+      if (!progress) return;
+      const rect = progress.getBoundingClientRect();
+      const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const previewTime = percent * duration;
+
+      if (seekPreviewRef.current) {
+        seekPreviewRef.current.style.left = `${percent * 100}%`;
+        setSeekPreviewTime(previewTime);
+      }
+    },
+    [duration, isScrubbing]
+  );
 
   const handleProgressMouseLeave = useCallback(() => {
     if (!isScrubbing) {
@@ -280,18 +312,21 @@ export default function VideoPlayer({
   }, [isScrubbing]);
 
   // Volume
-  const handleVolumeChange = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const video = videoRef.current;
-    const slider = volumeSliderRef.current;
-    if (!video || !slider) return;
+  const handleVolumeChange = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const video = videoRef.current;
+      const slider = volumeSliderRef.current;
+      if (!video || !slider) return;
 
-    const rect = slider.getBoundingClientRect();
-    const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    video.volume = percent;
-    setVolume(percent);
-    setIsMuted(percent === 0);
-    resetControlsTimeout();
-  }, [resetControlsTimeout]);
+      const rect = slider.getBoundingClientRect();
+      const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      video.volume = percent;
+      setVolume(percent);
+      setIsMuted(percent === 0);
+      resetControlsTimeout();
+    },
+    [resetControlsTimeout]
+  );
 
   const toggleMute = useCallback(() => {
     const video = videoRef.current;
@@ -409,12 +444,7 @@ export default function VideoPlayer({
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
     >
-      <video
-        ref={videoRef}
-        className="w-full h-full"
-        playsInline
-        onClick={togglePlay}
-      />
+      <video ref={videoRef} className="w-full h-full" playsInline onClick={togglePlay} />
 
       {/* Loading Overlay */}
       {isLoading && !error && (
@@ -430,12 +460,7 @@ export default function VideoPlayer({
       {error && (
         <div className="video-error-overlay absolute inset-0 flex items-center justify-center z-30">
           <div className="video-error-card">
-            <svg
-              className="video-error-icon"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
+            <svg className="video-error-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -444,17 +469,8 @@ export default function VideoPlayer({
               />
             </svg>
             <div className="video-error-text">{error}</div>
-            <button
-              className="video-error-close"
-              onClick={handleRetry}
-              aria-label="Retry"
-            >
-              <svg
-                className="video-error-close-icon"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
+            <button className="video-error-close" onClick={handleRetry} aria-label="Retry">
+              <svg className="video-error-close-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -476,16 +492,8 @@ export default function VideoPlayer({
         {/* Center Play Button */}
         {!isPlaying && (
           <div className="video-center-control absolute inset-0 flex items-center justify-center">
-            <button
-              className="video-play-button"
-              onClick={togglePlay}
-              aria-label="Play"
-            >
-              <svg
-                className="video-play-icon"
-                fill="currentColor"
-                viewBox="0 0 24 24"
-              >
+            <button className="video-play-button" onClick={togglePlay} aria-label="Play">
+              <svg className="video-play-icon" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M8 5v14l11-7z" />
               </svg>
             </button>
@@ -503,24 +511,11 @@ export default function VideoPlayer({
             onMouseLeave={handleProgressMouseLeave}
             onClick={handleSeek}
           >
-            <div
-              className="video-progress-buffered"
-              style={{ width: `${bufferedPercent}%` }}
-            />
-            <div
-              className="video-progress-current"
-              style={{ width: `${progressPercent}%` }}
-            />
-            <div
-              className="video-progress-handle"
-              style={{ left: `${progressPercent}%` }}
-            />
+            <div className="video-progress-buffered" style={{ width: `${bufferedPercent}%` }} />
+            <div className="video-progress-current" style={{ width: `${progressPercent}%` }} />
+            <div className="video-progress-handle" style={{ left: `${progressPercent}%` }} />
             {seekPreviewTime !== null && (
-              <div
-                ref={seekPreviewRef}
-                className="video-seek-preview-tooltip"
-                style={{ display: 'block' }}
-              >
+              <div ref={seekPreviewRef} className="video-seek-preview-tooltip" style={{ display: 'block' }}>
                 {formatTime(seekPreviewTime)}
               </div>
             )}
@@ -529,36 +524,16 @@ export default function VideoPlayer({
           {/* Controls Row */}
           <div className="video-controls-row">
             {/* Play/Pause */}
-            <button
-              className="video-control-button"
-              onClick={togglePlay}
-              aria-label={isPlaying ? 'Pause' : 'Play'}
-            >
-              <svg
-                className="video-control-icon"
-                fill="currentColor"
-                viewBox="0 0 24 24"
-              >
-                {isPlaying ? (
-                  <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
-                ) : (
-                  <path d="M8 5v14l11-7z" />
-                )}
+            <button className="video-control-button" onClick={togglePlay} aria-label={isPlaying ? 'Pause' : 'Play'}>
+              <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
+                {isPlaying ? <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" /> : <path d="M8 5v14l11-7z" />}
               </svg>
             </button>
 
             {/* Volume */}
             <div className="video-volume-container">
-              <button
-                className="video-control-button"
-                onClick={toggleMute}
-                aria-label={isMuted ? 'Unmute' : 'Mute'}
-              >
-                <svg
-                  className="video-control-icon"
-                  fill="currentColor"
-                  viewBox="0 0 24 24"
-                >
+              <button className="video-control-button" onClick={toggleMute} aria-label={isMuted ? 'Unmute' : 'Mute'}>
+                <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                   {isMuted || volume === 0 ? (
                     <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" />
                   ) : volume < 0.5 ? (
@@ -568,20 +543,10 @@ export default function VideoPlayer({
                   )}
                 </svg>
               </button>
-              <div
-                ref={volumeSliderRef}
-                className="video-volume-slider"
-                onClick={handleVolumeChange}
-              >
+              <div ref={volumeSliderRef} className="video-volume-slider" onClick={handleVolumeChange}>
                 <div className="video-volume-track">
-                  <div
-                    className="video-volume-fill"
-                    style={{ width: `${volume * 100}%` }}
-                  />
-                  <div
-                    className="video-volume-handle"
-                    style={{ left: `${volume * 100}%` }}
-                  />
+                  <div className="video-volume-fill" style={{ width: `${volume * 100}%` }} />
+                  <div className="video-volume-handle" style={{ left: `${volume * 100}%` }} />
                 </div>
               </div>
             </div>
@@ -599,11 +564,7 @@ export default function VideoPlayer({
                   onClick={() => setShowQualityMenu(!showQualityMenu)}
                   aria-label="Quality"
                 >
-                  <svg
-                    className="video-control-icon"
-                    fill="currentColor"
-                    viewBox="0 0 24 24"
-                  >
+                  <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3zm0 2.84L19 12h-2v6h-2v-6H9v6H7v-6H5l7-7.16z" />
                   </svg>
                 </button>
@@ -623,9 +584,7 @@ export default function VideoPlayer({
                               ? `${hlsRef.current.levels[level].height}p`
                               : `Level ${level}`}
                           </span>
-                          {currentQuality === level && (
-                            <span className="video-quality-check">✓</span>
-                          )}
+                          {currentQuality === level && <span className="video-quality-check">✓</span>}
                         </div>
                       </button>
                     ))}
@@ -640,11 +599,7 @@ export default function VideoPlayer({
               onClick={toggleFullscreen}
               aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
             >
-              <svg
-                className="video-control-icon"
-                fill="currentColor"
-                viewBox="0 0 24 24"
-              >
+              <svg className="video-control-icon" fill="currentColor" viewBox="0 0 24 24">
                 {isFullscreen ? (
                   <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
                 ) : (
@@ -658,4 +613,3 @@ export default function VideoPlayer({
     </div>
   );
 }
-
